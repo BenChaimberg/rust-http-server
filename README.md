@@ -1,8 +1,9 @@
 A single-threaded HTTP server implemented in Rust.
 
-## Directory Structure
+# Directory Structure
 
 ```
+httpd.conf
 src/
 ├─ cgi.rs
 ├─ config.rs
@@ -11,11 +12,18 @@ src/
 ├─ host.rs
 ├─ http.rs
 ├─ main.rs
-static/
+www/
+├─ cgi-bin/
+│  ├─ printenv.pl
+│  ├─ uppercase.pl
 ├─ index.html
 ├─ nested/
 │  ├─ index.html
 ```
+
+## src/
+
+Contains Rust files that can be compiled to produce the server binary. Build and run with `cargo run`.
 
 ### cgi.rs
 
@@ -44,3 +52,11 @@ Communicates with the remote over a TCP socket. Specifically: deserializes reque
 ### main.rs
 
 Entry-point into the server. Loads configuration, initializes a host, opens a listening socket, and passes accepted connections to the handler.
+
+## www/
+
+Contains example files that can be used to test the server.
+
+## httpd.conf
+
+Contains an example configuration file that can be used to test the server.
