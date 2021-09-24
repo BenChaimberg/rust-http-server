@@ -95,7 +95,7 @@ fn process_cgi_output(s: &mut str) -> Result<(Vec<(String, String)>, String), Er
                     })
                 })
         })
-        .ok_or(Error { message: "Could not parse headers from CGI response".to_string() })?;
+        .ok_or(Error::new("Could not parse headers from CGI response".to_string()))?;
     let body = sections.next().unwrap_or("").to_string();
     // println!("-- cgi parsed --");
     // println!("{:?}", headers);

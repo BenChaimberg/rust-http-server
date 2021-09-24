@@ -6,6 +6,7 @@ use crate::error::Error;
 #[derive(Debug)]
 pub struct ServerConfig {
     pub listen_port: u32,
+    pub cache_size: Option<u32>,
     pub virtual_hosts: Vec<VirtualHost>,
 }
 
@@ -21,26 +22,44 @@ pub fn load_config(config_path: &path::Path) -> Result<ServerConfig, Error> {
         .and_then(|file_content| {
             file_content.split_once("\n")
                 .and_then(|(listen_line, rest)| {
-                    parse_listen_line(listen_line).map(|listen_port| (listen_port, rest))
+                    parse_listen_port(listen_line).map(|listen_port| (listen_port, rest))
                 })
                 .and_then(|(listen_port, rest)| {
-                    parse_virtual_hosts(rest).map(|virtual_hosts| (listen_port, virtual_hosts))
+                    rest.split_once("\n").map(|(cache_size_line, rest)| (listen_port, cache_size_line, rest))
                 })
-                .map(|(listen_port, virtual_hosts)| {
+                .and_then(|(listen_port, cache_size_line, rest)| {
+                    parse_cache_size(cache_size_line).map(|cache_size| (listen_port, cache_size, rest))
+                })
+                .and_then(|(listen_port, cache_size, rest)| {
+                    parse_virtual_hosts(rest).map(|virtual_hosts| (listen_port, cache_size, virtual_hosts))
+                })
+                .map(|(listen_port, cache_size, virtual_hosts)| {
                     ServerConfig {
                         listen_port: listen_port,
+                        cache_size: Some(cache_size),
                         virtual_hosts: virtual_hosts,
                     }
                 })
-                .ok_or(Error { message: "Could not parse file content into Apache-style configuration file".to_string() })
+                .ok_or(Error::new("Could not parse file content into Apache-style configuration file".to_string()))
         })
 }
 
-fn parse_listen_line(s: &str) -> Option<u32> {
+fn parse_listen_port(s: &str) -> Option<u32> {
     let listen_prefix = "Listen ";
     if s.starts_with(listen_prefix) {
         let port = &s[listen_prefix.len()..];
         let parsed = u32::from_str(port);
+        parsed.ok()
+    } else {
+        None
+    }
+}
+
+fn parse_cache_size(s: &str) -> Option<u32> {
+    let cache_size_prefix = "CacheSize ";
+    if s.starts_with(cache_size_prefix) {
+        let cache_size = &s[cache_size_prefix.len()..];
+        let parsed = u32::from_str(cache_size);
         parsed.ok()
     } else {
         None

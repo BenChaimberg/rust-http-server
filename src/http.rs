@@ -22,8 +22,10 @@ pub fn handle_client(mut stream: net::TcpStream, handler: &impl RequestHandler) 
 
     let response = handler.handle(request);
 
+    /*
     println!("-- response --");
     println!("{:#?}", response);
+     */
 
     stream.write_all(response.to_string().as_bytes())?;
 
@@ -108,7 +110,7 @@ fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
 
     Ok(Request {
         header: RequestHeader {
-            request_line: request_line.ok_or(Error { message: "Could not parse request line".to_string() })?,
+            request_line: request_line.ok_or(Error::new("Could not parse request line".to_string()))?,
             header_lines
         },
         remote: Remote { addr: stream.peer_addr().unwrap() },
@@ -120,11 +122,11 @@ fn parse_header_line(line: &str) -> Result<(String, String), Error> {
     let mut fields = line.split(":");
     let field_name = fields.next()
         .map(String::from)
-        .ok_or(Error { message: "Could not get field name from header line".to_string() })?;
+        .ok_or(Error::new("Could not get field name from header line".to_string()))?;
     let field_value = fields.next()
         .map(str::trim)
         .map(String::from)
-        .ok_or(Error { message: "Could not get field value from header line".to_string() })?;
+        .ok_or(Error::new("Could not get field value from header line".to_string()))?;
     let header_line = (field_name, field_value);
     // println!("-- header_line: {:?} --", header_line);
     Ok(header_line)
@@ -138,18 +140,18 @@ fn parse_request_line(line: &str) -> Result<RequestLine, Error> {
             "POST" => Some(Method::Post),
             _ => None,
         })
-        .ok_or(Error { message: "Could not get method from request line".to_string() })?;
+        .ok_or(Error::new("Could not get method from request line".to_string()))?;
     // println!("-- method: {:?} --", method);
 
     let (request_path, query_string) = words.next()
         .map(|s| s.split_once("?").unwrap_or((s, "")))
         .map(|(s1, s2)| (String::from(s1), String::from(s2)))
-        .ok_or(Error { message: "Could not get request target from request line".to_string() })?;
+        .ok_or(Error::new("Could not get request target from request line".to_string()))?;
     // println!("-- request_target: {:?} --", request_target);
 
     let http_version = words.next()
         .map(String::from)
-        .ok_or(Error { message: "Could not get HTTP version from request line".to_string() })?;
+        .ok_or(Error::new("Could not get HTTP version from request line".to_string()))?;
     // println!("-- http_version: {:?} --", http_version);
 
     Ok(RequestLine { method, request_path, query_string, http_version })
