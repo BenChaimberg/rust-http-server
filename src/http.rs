@@ -1,38 +1,18 @@
-use std::io;
+use std::collections;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net;
 use std::str;
+use crate::error::Error;
 
-pub const CRLF: &str = "\r\n";
+pub const HTTP_VERSION: &str = "HTTP/1.1";
+const CRLF: &str = "\r\n";
 const BUF_SIZE: usize = 32;
-
-#[derive(Debug)]
-pub struct Error {
-    message: String,
-}
-impl std::error::Error for Error {}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{}", self.message)?;
-        Ok(())
-    }
-}
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Self {
-        Error { message: format!("IO error: {:?}", e.kind()) }
-    }
-}
-impl From<str::Utf8Error> for Error {
-    fn from(_: str::Utf8Error) -> Self {
-        Error { message: "Could not interpret a sequence of u8 as a string".to_string() }
-    }
-}
 
 pub trait RequestHandler {
     fn handle<'a>(&self, r: Request) -> Response;
 }
 
-pub fn handle_client(mut stream: TcpStream, handler: &impl RequestHandler) -> Result<(), Error> {
+pub fn handle_client(mut stream: net::TcpStream, handler: &impl RequestHandler) -> Result<(), Error> {
     let request = parse_request(&mut stream)?;
 
     /*
@@ -50,11 +30,11 @@ pub fn handle_client(mut stream: TcpStream, handler: &impl RequestHandler) -> Re
     Ok(())
 }
 
-fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
+fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
     let mut buf = [0; BUF_SIZE];
     let mut request_line: Option<RequestLine> = None;
     let mut body = String::new();
-    let mut header_lines: Vec<(String, String)> = Vec::new();
+    let mut header_lines: collections::HashMap<String, String> = collections::HashMap::new();
 
     let mut continuation = String::new();
     loop {
@@ -97,8 +77,8 @@ fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
                 if line.is_empty() {
                     break
                 }
-                let header_line = parse_header_line(line);
-                header_lines.push(header_line?);
+                let header_line = parse_header_line(line)?;
+                header_lines.insert(header_line.0, header_line.1);
 
                 s = &s[next_break+2..];
                 next_break = match s.find(CRLF) {
@@ -131,6 +111,7 @@ fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
             request_line: request_line.ok_or(Error { message: "Could not parse request line".to_string() })?,
             header_lines
         },
+        remote: Remote { addr: stream.peer_addr().unwrap() },
         body,
     })
 }
@@ -160,8 +141,9 @@ fn parse_request_line(line: &str) -> Result<RequestLine, Error> {
         .ok_or(Error { message: "Could not get method from request line".to_string() })?;
     // println!("-- method: {:?} --", method);
 
-    let request_target = words.next()
-        .map(String::from)
+    let (request_path, query_string) = words.next()
+        .map(|s| s.split_once("?").unwrap_or((s, "")))
+        .map(|(s1, s2)| (String::from(s1), String::from(s2)))
         .ok_or(Error { message: "Could not get request target from request line".to_string() })?;
     // println!("-- request_target: {:?} --", request_target);
 
@@ -170,7 +152,27 @@ fn parse_request_line(line: &str) -> Result<RequestLine, Error> {
         .ok_or(Error { message: "Could not get HTTP version from request line".to_string() })?;
     // println!("-- http_version: {:?} --", http_version);
 
-    Ok(RequestLine { method, request_target, http_version })
+    Ok(RequestLine { method, request_path, query_string, http_version })
+}
+
+pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Response where T: std::fmt::Display {
+    match status_code {
+        StatusCode::InternalServerError => {
+            let message = message.map(|m| format!("{}", m)).unwrap_or("<unknown>".to_string());
+            println!("Internal server error: {}", message);
+        },
+        _ => {},
+    }
+    Response {
+        header: ResponseHeader {
+            status_line: StatusLine {
+                status_code,
+                http_version: String::from(HTTP_VERSION),
+            },
+            header_lines: Vec::new(),
+        },
+        body: String::new(),
+    }
 }
 
 #[derive(Debug)]
@@ -226,12 +228,13 @@ impl ToString for StatusLine {
 
 #[derive(Debug)]
 pub enum StatusCode {
-    Ok, Forbidden, NotFound, InternalServerError
+    Ok, BadRequest, Forbidden, NotFound, InternalServerError
 }
 impl ToString for StatusCode {
     fn to_string(&self) -> String {
         match self {
             StatusCode::Ok => "200 OK".to_string(),
+            StatusCode::BadRequest => "400 Bad Request".to_string(),
             StatusCode::Forbidden => "403 Forbidden".to_string(),
             StatusCode::NotFound => "404 Not Found".to_string(),
             StatusCode::InternalServerError => "500 Internal Server Error".to_string(),
@@ -242,19 +245,21 @@ impl ToString for StatusCode {
 #[derive(Debug)]
 pub struct Request {
     pub header: RequestHeader,
+    pub remote: Remote,
     pub body: String,
 }
 
 #[derive(Debug)]
 pub struct RequestHeader {
     pub request_line: RequestLine,
-    pub header_lines: Vec<(String, String)>,
+    pub header_lines: collections::HashMap<String, String>,
 }
 
 #[derive(Debug)]
 pub struct RequestLine {
     pub method: Method,
-    pub request_target: String,
+    pub request_path: String,
+    pub query_string: String,
     http_version: String,
 }
 
@@ -269,4 +274,9 @@ impl ToString for Method {
             Method::Post => "POST".to_string(),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct Remote {
+    pub addr: net::SocketAddr,
 }
