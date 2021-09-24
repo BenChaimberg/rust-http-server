@@ -2,6 +2,7 @@ A single-threaded HTTP server implemented in Rust.
 
 ## Directory Structure
 
+```
 src/
 ├─ cgi.rs
 ├─ config.rs
@@ -14,6 +15,7 @@ static/
 ├─ index.html
 ├─ nested/
 │  ├─ index.html
+```
 
 ### cgi.rs
 
