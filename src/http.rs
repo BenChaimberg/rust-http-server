@@ -119,14 +119,10 @@ fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
 }
 
 fn parse_header_line(line: &str) -> Result<(String, String), Error> {
-    let mut fields = line.split(":");
-    let field_name = fields.next()
-        .map(String::from)
-        .ok_or(Error::new("Could not get field name from header line".to_string()))?;
-    let field_value = fields.next()
-        .map(str::trim)
-        .map(String::from)
-        .ok_or(Error::new("Could not get field value from header line".to_string()))?;
+    let fields = line.split_once(":")
+        .ok_or(Error::new("Could not parse header line".to_string()))?;
+    let field_name = String::from(fields.0);
+    let field_value = String::from(fields.1.trim());
     let header_line = (field_name, field_value);
     // println!("-- header_line: {:?} --", header_line);
     Ok(header_line)
@@ -230,12 +226,13 @@ impl ToString for StatusLine {
 
 #[derive(Debug)]
 pub enum StatusCode {
-    Ok, BadRequest, Forbidden, NotFound, InternalServerError
+    Ok, NotModified, BadRequest, Forbidden, NotFound, InternalServerError
 }
 impl ToString for StatusCode {
     fn to_string(&self) -> String {
         match self {
             StatusCode::Ok => "200 OK".to_string(),
+            StatusCode::NotModified => "304 Not Modified".to_string(),
             StatusCode::BadRequest => "400 Bad Request".to_string(),
             StatusCode::Forbidden => "403 Forbidden".to_string(),
             StatusCode::NotFound => "404 Not Found".to_string(),

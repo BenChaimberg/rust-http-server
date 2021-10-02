@@ -1,5 +1,6 @@
 use std::io;
 use std::str;
+use std::time;
 use crate::http::StatusCode;
 
 #[derive(Debug)]
@@ -18,6 +19,7 @@ impl std::fmt::Display for Error {
         Ok(())
     }
 }
+
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Error::new(format!("IO error: {:?}", e.kind()))
@@ -26,6 +28,11 @@ impl From<io::Error> for Error {
 impl From<str::Utf8Error> for Error {
     fn from(_: str::Utf8Error) -> Self {
         Error::new("Could not interpret a sequence of u8 as a string".to_string())
+    }
+}
+impl From<time::SystemTimeError> for Error {
+    fn from(e: time::SystemTimeError) -> Self {
+        Error::new(format!("SystemTimeError different: {:?}", e.duration()))
     }
 }
 

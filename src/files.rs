@@ -4,6 +4,7 @@ use std::convert::TryInto;
 use std::fs;
 use std::io;
 use std::path;
+use std::time;
 use crate::error;
 use crate::http::*;
 
@@ -51,7 +52,7 @@ impl Files {
                         io::ErrorKind::NotFound => StatusCode::NotFound,
                         _ => StatusCode::InternalServerError
                     };
-                    Err(error::HttpError { status, message: Some(e.to_string()) })
+                    Err(error::HttpError { status, message: Some(e.to_string())})
                 },
             });
         match content {
@@ -69,5 +70,12 @@ impl Files {
             },
             Err(e) => error_response(e.status, e.message),
         }
+    }
+
+    pub fn modified_since(path: &path::PathBuf, start: time::Duration) -> Result<bool, error::Error> {
+        let metadata = fs::metadata(path)?;
+        let modified = metadata.modified()?;
+        let duration = modified.duration_since(time::UNIX_EPOCH)?;
+        Ok(duration > start)
     }
 }

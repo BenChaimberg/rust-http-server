@@ -4,6 +4,7 @@ mod error;
 mod files;
 mod host;
 mod http;
+mod time;
 
 fn main() -> Result<(), error::Error> {
     let server_config = config::load_config(&std::path::Path::new("/home/accts/bnc24/cs434/projects/p1/httpd.conf"))?;

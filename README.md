@@ -39,7 +39,7 @@ Defines some error types for shared use throughout the project.
 
 ### files.rs
 
-Provides access to static files. Caches the content of the files up to a configurable limit. Currently, the `If-Modified-Since` header is not respected and the cached content is not refreshed if the file has been modified since it has been cached.
+Provides access to static files. Caches the content of the files up to a configurable limit.
 
 ### host.rs
 
@@ -47,7 +47,7 @@ Processes requests and produces responses. Currently, representation selection t
 
 ### http.rs
 
-Communicates with the remote over a TCP socket. Specifically: deserializes requests, passes to the host, and serializes the response.
+Communicates with the remote over a TCP socket. Specifically: deserializes a request, passes to the host, and serializes the response.
 
 ### main.rs
 

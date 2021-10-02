@@ -1,11 +1,14 @@
+use std::convert::TryInto;
 use std::ops::BitAnd;
 use std::os::unix::fs::PermissionsExt;
 use std::path;
+use std::time;
 use crate::config::*;
 use crate::cgi;
 use crate::error;
 use crate::files;
 use crate::http::*;
+use crate::time::parse_date_1123;
 
 pub struct Host<'a> {
     server_config: &'a ServerConfig,
@@ -50,8 +53,29 @@ impl<'a> Host<'a> {
         }
 
         if metadata.permissions().mode().bitand(0o1).eq(&0o1) {
-            println!("-- permissions {} --", metadata.permissions().mode());
             return self.cgi.handle(path, request, virtual_host);
+        }
+
+        if let Some(since) = request.header.header_lines.get("If-Modified-Since") {
+            let since = parse_date_1123(since);
+            match since {
+                Ok(since) => {
+                    let mod_since = files::Files::modified_since(&path, time::Duration::from_secs(since.timestamp().try_into().unwrap())).unwrap_or(true);
+                    if !mod_since {
+                        return Response {
+                            header: ResponseHeader {
+                                status_line: StatusLine {
+                                    status_code: StatusCode::NotModified,
+                                    http_version: String::from(HTTP_VERSION),
+                                },
+                                header_lines: Vec::new(),
+                            },
+                            body: String::new(),
+                        }
+                    }
+                },
+                Err(e) => return error_response(StatusCode::BadRequest, Some(e.message)),
+            }
         }
 
         self.files.get_content(path)
