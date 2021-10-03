@@ -33,6 +33,11 @@ impl<'a> Host<'a> {
         let host_path = request.header.header_lines.get(&HeaderField::Host)
             .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;
         let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
+
+        if request.header.request_line.method == Method::Get && request.header.request_line.request_path == "/load" {
+            return heartbeat();
+        }
+
         let request_target = parse_path(&virtual_host.document_root, &request.header.request_line.request_path)?;
 
         match request.header.request_line.method {
@@ -79,6 +84,21 @@ impl<'a> Host<'a> {
         // assert not directory
         return self.cgi.handle(request_target.path, request, virtual_host);
     }
+}
+
+fn heartbeat() -> Result<Response, error::HttpError> {
+    Ok(
+        Response {
+            header: ResponseHeader {
+                status_line: StatusLine {
+                    status_code: StatusCode::Ok,
+                    http_version: String::from(HTTP_VERSION),
+                },
+                header_lines: Vec::new(),
+            },
+            body: String::new(),
+        }
+    )
 }
 
 fn content_negotiation(request_target: RequestTarget, header_lines: &std::collections::HashMap<HeaderField, String>) -> Result<(path::PathBuf, std::fs::Metadata), error::HttpError> {

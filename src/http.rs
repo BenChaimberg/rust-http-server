@@ -280,7 +280,7 @@ pub struct RequestLine {
     http_version: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub enum Method {
     Get, Post
 }
