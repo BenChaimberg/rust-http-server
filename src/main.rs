@@ -15,7 +15,9 @@ fn main() -> Result<(), error::Error> {
     let handler = host::Host::new(&server_config);
     // accept connections and process them serially
     for stream in listener.incoming() {
-        http::handle_client(stream?, &handler)?;
+        if let Err(e) = http::handle_client(stream?, &handler) {
+            println!("Encounted error: {:#?}", e);
+        }
     }
     Ok(())
 }
