@@ -22,7 +22,7 @@ impl<'a> Host<'a> {
 }
 impl RequestHandler for Host<'_> {
     fn handle(&self, request: Request) -> Response {
-        let host_path = match request.header.header_lines.get("Host") {
+        let host_path = match request.header.header_lines.get(&HeaderField::Host) {
             Some(p) => p,
             None => return error_response::<String>(StatusCode::BadRequest, None),
         };
@@ -56,7 +56,7 @@ impl<'a> Host<'a> {
             return self.cgi.handle(path, request, virtual_host);
         }
 
-        if let Some(since) = request.header.header_lines.get("If-Modified-Since") {
+        if let Some(since) = request.header.header_lines.get(&HeaderField::IfModifiedSince) {
             let since = parse_date_1123(since);
             match since {
                 Ok(since) => {

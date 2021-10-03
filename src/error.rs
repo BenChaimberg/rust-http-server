@@ -35,6 +35,11 @@ impl From<time::SystemTimeError> for Error {
         Error::new(format!("SystemTimeError different: {:?}", e.duration()))
     }
 }
+impl From<()> for Error {
+    fn from(_: ()) -> Self {
+        Error::new("".to_string())
+    }
+}
 
 #[derive(Debug)]
 pub struct HttpError {

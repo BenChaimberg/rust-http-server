@@ -2,6 +2,7 @@ use std::collections;
 use std::io::{Read, Write};
 use std::net;
 use std::str;
+use std::str::FromStr;
 use crate::error::Error;
 
 pub const HTTP_VERSION: &str = "HTTP/1.1";
@@ -36,7 +37,7 @@ fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
     let mut buf = [0; BUF_SIZE];
     let mut request_line: Option<RequestLine> = None;
     let mut body = String::new();
-    let mut header_lines: collections::HashMap<String, String> = collections::HashMap::new();
+    let mut header_lines = collections::HashMap::new();
 
     let mut continuation = String::new();
     loop {
@@ -118,10 +119,10 @@ fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
     })
 }
 
-fn parse_header_line(line: &str) -> Result<(String, String), Error> {
+fn parse_header_line(line: &str) -> Result<(HeaderField, String), Error> {
     let fields = line.split_once(":")
         .ok_or(Error::new("Could not parse header line".to_string()))?;
-    let field_name = String::from(fields.0);
+    let field_name = HeaderField::from_str(fields.0)?;
     let field_value = String::from(fields.1.trim());
     let header_line = (field_name, field_value);
     // println!("-- header_line: {:?} --", header_line);
@@ -251,7 +252,24 @@ pub struct Request {
 #[derive(Debug)]
 pub struct RequestHeader {
     pub request_line: RequestLine,
-    pub header_lines: collections::HashMap<String, String>,
+    pub header_lines: collections::HashMap<HeaderField, String>,
+}
+
+#[derive(Debug,PartialEq,Eq,Hash)]
+pub enum HeaderField {
+    Host, IfModifiedSince, UserAgent, NotSupported
+}
+impl FromStr for HeaderField {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "If-Modified-Since" => HeaderField::IfModifiedSince,
+            "Host" => HeaderField::Host,
+            "User-Agent" => HeaderField::UserAgent,
+            _ => HeaderField::NotSupported,
+        })
+    }
 }
 
 #[derive(Debug)]
