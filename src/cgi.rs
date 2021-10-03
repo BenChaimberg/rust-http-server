@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path;
 use std::process;
 use crate::config::*;
-use crate::error::Error;
+use crate::error::{Error,HttpError};
 use crate::http::*;
 
 pub struct Cgi<'a> {
@@ -15,7 +15,7 @@ impl<'a> Cgi<'a> {
     }
 }
 impl Cgi<'_> {
-    pub fn handle(&self, path: path::PathBuf, request: Request, virtual_host: &VirtualHost) -> Response {
+    pub fn handle(&self, path: path::PathBuf, request: Request, virtual_host: &VirtualHost) -> Result<Response, HttpError> {
         let remote_addr = request.remote.addr.to_string();
         let request_method = request.header.request_line.method.to_string();
         let server_port = self.server_config.listen_port.to_string();
@@ -69,12 +69,12 @@ impl Cgi<'_> {
                         },
                         header_lines: headers,
                     },
-                    body: body,
+                    body,
                 }
             })
-            .unwrap_or_else(|e| {
+            .map_err(|e| {
                 println!("-- bad cgi --");
-                error_response(StatusCode::InternalServerError, Some(e))
+                HttpError { status: StatusCode::InternalServerError, message: Some(e.to_string()) }
             })
     }
 }
