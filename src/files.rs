@@ -7,11 +7,17 @@ use std::path;
 use std::time;
 use crate::error;
 use crate::http::*;
+use crate::time::to_1123;
 
 const BYTES_PER_KILOBYTE: u32 = 1024;
 
 pub struct Files {
-    cache: RefCell<collections::HashMap<path::PathBuf, String>>,
+    cache: RefCell<collections::HashMap<path::PathBuf, File>>,
+}
+
+struct File {
+    content: String,
+    modified: time::SystemTime,
 }
 
 impl Files {
@@ -28,11 +34,11 @@ impl Files {
     }
 
     pub fn get_content(&self, path: path::PathBuf) -> Result<Response, error::HttpError> {
-        let cached_content = {
+        let cached = {
             self.cache.borrow().get(&path)
-                .map(|content| {
+                .map(|File { content, modified }| {
                     // println!("-- cache hit --");
-                    content.to_string()
+                    File { content: content.to_string(), modified: modified.clone() }
                 })
                 .ok_or_else(|| {
                     let s = "cache miss";
@@ -40,45 +46,61 @@ impl Files {
                     s.to_string();
                 })
         };
-        cached_content
-            .or_else(|_| match fs::read_to_string(&path) {
-                Ok(content) => {
-                    self.cache.borrow_mut().insert(path.clone(), content.clone());
-                    // println!("-- cache insert --");
-                    Ok(content)
-                },
-                Err(e) => {
-                    let status = match e.kind() {
-                        io::ErrorKind::NotFound => StatusCode::NotFound,
-                        _ => StatusCode::InternalServerError
-                    };
-                    Err(error::HttpError { status, message: Some(e.to_string())})
-                },
-            })
-            .map(|content| {
-                let mut header_lines = vec![("Content-Length".to_string(), (content.len() + 2).to_string())];
-                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-                    let content_type = match extension {
-                        "txt" => Some("text/plain"),
-                        "html" => Some("text/html"),
-                        "jpg" => Some("image/jpeg"),
-                        _ => None,
-                    };
-                    if let Some(content_type) = content_type {
-                        header_lines.push(("Content-Type".to_string(), content_type.to_string()));
-                    }
+        let File { content, modified } = cached
+            .or_else(|_| {
+                fs::read_to_string(&path)
+                    .map(|content| {
+                        let modified = path.metadata().unwrap().modified().unwrap();
+                        self.cache.borrow_mut().insert(path.clone(), File { content: content.clone(), modified, });
+                        // println!("-- cache insert --");
+                        File { content, modified }
+                    })
+                    .map_err(|e| {
+                        let status = match e.kind() {
+                            io::ErrorKind::NotFound => StatusCode::NotFound,
+                            _ => StatusCode::InternalServerError
+                        };
+                        error::HttpError { status, message: Some(e.to_string())}
+                    })
+            })?;
+
+        let header_lines = {
+            let modified_str = to_1123(
+                chrono::DateTime::from_utc(
+                    chrono::naive::NaiveDateTime::from_timestamp(
+                        modified.duration_since(time::UNIX_EPOCH).unwrap().as_secs().try_into().unwrap(),
+                        0
+                    ),
+                    chrono::offset::Utc
+                )
+            );
+            let mut header_lines = vec![
+                ("Content-Length".to_string(), (content.len() + 2).to_string()),
+                ("Last-Modified".to_string(), modified_str),
+            ];
+            if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+                let content_type = match extension {
+                    "txt" => Some("text/plain"),
+                    "html" => Some("text/html"),
+                    "jpg" => Some("image/jpeg"),
+                    _ => None,
+                };
+                if let Some(content_type) = content_type {
+                    header_lines.push(("Content-Type".to_string(), content_type.to_string()));
                 }
-                Response {
-                    header: ResponseHeader {
-                        status_line: StatusLine {
-                            status_code: StatusCode::Ok,
-                            http_version: String::from(HTTP_VERSION),
-                        },
-                        header_lines,
-                    },
-                    body: content,
-                }
-            })
+            }
+            header_lines
+        };
+        Ok(Response {
+            header: ResponseHeader {
+                status_line: StatusLine {
+                    status_code: StatusCode::Ok,
+                    http_version: String::from(HTTP_VERSION),
+                },
+                header_lines,
+            },
+            body: content,
+        })
     }
 
     pub fn modified_since(path: &path::PathBuf, start: time::Duration) -> Result<bool, error::Error> {

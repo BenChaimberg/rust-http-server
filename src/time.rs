@@ -2,10 +2,14 @@ use std::convert::TryInto;
 use crate::error;
 
 pub fn now_1123() -> String {
-    let now_2822 = chrono::Utc::now().to_rfc2822();
-    let mut now_1123 = now_2822[..(now_2822.len()-5)].to_string();
-    now_1123.push_str("GMT");
-    now_1123
+    to_1123(chrono::Utc::now())
+}
+
+pub fn to_1123(datetime: chrono::DateTime<chrono::offset::Utc>) -> String {
+    let datetime_2822 = datetime.to_rfc2822();
+    let mut datetime_1123 = datetime_2822[..(datetime_2822.len()-5)].to_string();
+    datetime_1123.push_str("GMT");
+    datetime_1123
 }
 
 pub fn parse_date_1123(s: &str) -> Result<chrono::DateTime<chrono::offset::Utc>, error::Error> {
