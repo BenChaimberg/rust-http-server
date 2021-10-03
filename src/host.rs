@@ -24,27 +24,23 @@ impl<'a> Host<'a> {
 
 impl RequestHandler for Host<'_> {
     fn handle(&self, request: Request) -> Response {
-        let host_path = match request.header.header_lines.get(&HeaderField::Host) {
-            Some(p) => p,
-            None => return error_response::<String>(StatusCode::BadRequest, None),
-        };
-        let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
-        let request_target = match parse_path(&virtual_host.document_root, &request.header.request_line.request_path) {
-            Ok(path) => path,
-            Err(error::HttpError { status, message }) => {
-                println!("-- bad parse_path --");
-                return error_response(status, message)
-            },
-        };
-
-        match request.header.request_line.method {
-            Method::Get => self.handle_get(request_target, request, virtual_host),
-            Method::Post => self.handle_post(request_target, request, virtual_host),
-        }.unwrap_or_else(|e| error_response(e.status, e.message))
+        self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message))
     }
 }
 
 impl<'a> Host<'a> {
+    fn handle_result(&self, request: Request) -> Result<Response, error::HttpError> {
+        let host_path = request.header.header_lines.get(&HeaderField::Host)
+            .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;
+        let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
+        let request_target = parse_path(&virtual_host.document_root, &request.header.request_line.request_path)?;
+
+        match request.header.request_line.method {
+            Method::Get => self.handle_get(request_target, request, virtual_host),
+            Method::Post => self.handle_post(request_target, request, virtual_host),
+        }
+    }
+
     fn handle_get(&self, request_target: RequestTarget, request: Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
         let (path, metadata) = content_negotiation(request_target, &request.header.header_lines)?;
 
@@ -75,7 +71,7 @@ impl<'a> Host<'a> {
             }
         }
 
-        Ok(self.files.get_content(path))
+        self.files.get_content(path)
     }
 
     fn handle_post(&self, request_target: RequestTarget, request: Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
@@ -83,10 +79,6 @@ impl<'a> Host<'a> {
         // assert not directory
         return self.cgi.handle(request_target.path, request, virtual_host);
     }
-}
-
-fn metadata_or_400(path: &path::PathBuf) -> Result<std::fs::Metadata, error::HttpError> {
-    path.metadata().map_err(|_| error::HttpError { status: StatusCode::NotFound, message: None })
 }
 
 fn content_negotiation(request_target: RequestTarget, header_lines: &std::collections::HashMap<HeaderField, String>) -> Result<(path::PathBuf, std::fs::Metadata), error::HttpError> {
@@ -107,6 +99,10 @@ fn content_negotiation(request_target: RequestTarget, header_lines: &std::collec
     }
     let metadata = metadata_or_400(&path)?;
     Ok((path, metadata))
+}
+
+fn metadata_or_400(path: &path::PathBuf) -> Result<std::fs::Metadata, error::HttpError> {
+    path.metadata().map_err(|_| error::HttpError { status: StatusCode::NotFound, message: None })
 }
 
 fn get_virtual_host<'a>(virtual_hosts: &'a Vec<VirtualHost>, host: &str) -> &'a VirtualHost {

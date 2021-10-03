@@ -27,7 +27,7 @@ impl Files {
         }
     }
 
-    pub fn get_content(&self, path: path::PathBuf) -> Response {
+    pub fn get_content(&self, path: path::PathBuf) -> Result<Response, error::HttpError> {
         let cached_content = {
             self.cache.borrow().get(&path)
                 .map(|content| {
@@ -40,10 +40,10 @@ impl Files {
                     s.to_string();
                 })
         };
-        let content = cached_content
+        cached_content
             .or_else(|_| match fs::read_to_string(&path) {
                 Ok(content) => {
-                    self.cache.borrow_mut().insert(path, content.clone());
+                    self.cache.borrow_mut().insert(path.clone(), content.clone());
                     // println!("-- cache insert --");
                     Ok(content)
                 },
@@ -54,22 +54,31 @@ impl Files {
                     };
                     Err(error::HttpError { status, message: Some(e.to_string())})
                 },
-            });
-        match content {
-            Ok(content) => {
+            })
+            .map(|content| {
+                let mut header_lines = vec![("Content-Length".to_string(), (content.len() + 2).to_string())];
+                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+                    let content_type = match extension {
+                        "txt" => Some("text/plain"),
+                        "html" => Some("text/html"),
+                        "jpg" => Some("image/jpeg"),
+                        _ => None,
+                    };
+                    if let Some(content_type) = content_type {
+                        header_lines.push(("Content-Type".to_string(), content_type.to_string()));
+                    }
+                }
                 Response {
                     header: ResponseHeader {
                         status_line: StatusLine {
                             status_code: StatusCode::Ok,
                             http_version: String::from(HTTP_VERSION),
                         },
-                        header_lines: vec![("Content-Length".to_string(), (content.len() + 2).to_string())],
+                        header_lines,
                     },
                     body: content,
                 }
-            },
-            Err(e) => error_response(e.status, e.message),
-        }
+            })
     }
 
     pub fn modified_since(path: &path::PathBuf, start: time::Duration) -> Result<bool, error::Error> {
