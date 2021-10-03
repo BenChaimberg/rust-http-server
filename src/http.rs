@@ -1,6 +1,7 @@
-use std::collections;
+use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::{Read, Write};
-use std::net;
+use std::net::{SocketAddr, TcpStream};
 use std::str;
 use std::str::FromStr;
 use crate::error::Error;
@@ -13,31 +14,61 @@ pub trait RequestHandler {
     fn handle<'a>(&self, r: Request) -> Response;
 }
 
-pub fn handle_client(mut stream: net::TcpStream, handler: &impl RequestHandler) -> Result<(), Error> {
+pub fn handle_client(mut stream: TcpStream, handler: &impl RequestHandler) -> Result<(), Error> {
     let request = parse_request(&mut stream)?;
-
-    /*
-    println!("-- request --");
-    println!("{:#?}", request);
-     */
 
     let response = handler.handle(request);
 
-    /*
-    println!("-- response --");
-    println!("{:#?}", response);
-     */
-
-    stream.write_all(response.to_string().as_bytes())?;
+    let chunk_len: usize = 1024;
+    if response.header.header_lines.get(&ResponseHeaderField::ContentLength)
+        .and_then(|content_length| u32::from_str(content_length).ok())
+        .map(|content_length| content_length > chunk_len.try_into().unwrap())
+        .unwrap_or(true) {
+        // arbitrarily choose a maximum response body length, after which responses will be encoded using chunked transfer coding
+        // this is not necessarily the intended use case for chunked transfer coding, but will serve as a demo
+        write_chunked(response, &mut stream, chunk_len)?;
+    } else {
+        stream.write_all(response.to_string().as_bytes())?;
+    }
 
     Ok(())
 }
 
-fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
+fn write_chunked(mut response: Response, stream: &mut TcpStream, chunk_len: usize) -> Result<(), Error> {
+    response.header.header_lines.remove(&ResponseHeaderField::ContentLength);
+    response.header.header_lines.insert(ResponseHeaderField::TransferEncoding, "chunked".to_string());
+    stream.write_all(response.header.to_string().as_bytes())?;
+    stream.write_all(CRLF.as_bytes())?;
+
+    let mut body_iter = response.body.as_bytes().chunks_exact(chunk_len);
+    loop {
+        if let Some(chunk) = body_iter.next() {
+            write_chunk(chunk, chunk_len, stream)?;
+        } else {
+            break;
+        }
+    }
+    let remainder = body_iter.remainder();
+    if remainder.len() > 0 {
+        write_chunk(remainder, remainder.len(), stream)?;
+    }
+    write_chunk(&[], 0, stream)?;
+    Ok(())
+}
+
+fn write_chunk(chunk: &[u8], chunk_len: usize, stream: &mut TcpStream) -> Result<(), Error> {
+    stream.write_all(format!("{:x}", chunk_len).as_bytes())?;
+    stream.write_all(CRLF.as_bytes())?;
+    stream.write_all(chunk)?;
+    stream.write_all(CRLF.as_bytes())?;
+    Ok(())
+}
+
+fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
     let mut buf = [0; BUF_SIZE];
     let mut request_line: Option<RequestLine> = None;
     let mut body = String::new();
-    let mut header_lines = collections::HashMap::new();
+    let mut header_lines = HashMap::new();
 
     let mut continuation = String::new();
     loop {
@@ -168,7 +199,7 @@ pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Respons
                 status_code,
                 http_version: String::from(HTTP_VERSION),
             },
-            header_lines: collections::HashMap::new(),
+            header_lines: HashMap::new(),
         },
         body: String::new(),
     }
@@ -193,7 +224,7 @@ impl ToString for Response {
 #[derive(Debug)]
 pub struct ResponseHeader {
     pub status_line: StatusLine,
-    pub header_lines: collections::HashMap<ResponseHeaderField, String>,
+    pub header_lines: HashMap<ResponseHeaderField, String>,
 }
 impl ToString for ResponseHeader {
     fn to_string(&self) -> String {
@@ -211,7 +242,7 @@ impl ToString for ResponseHeader {
 
 #[derive(Debug,PartialEq,Eq,Hash)]
 pub enum ResponseHeaderField {
-    ContentLength, ContentType, Date, LastModified, Server
+    ContentLength, ContentType, Date, LastModified, Server, TransferEncoding
 }
 impl ToString for ResponseHeaderField {
     fn to_string(&self) -> String {
@@ -221,6 +252,7 @@ impl ToString for ResponseHeaderField {
             ResponseHeaderField::Date => "Date",
             ResponseHeaderField::LastModified => "Last-Modified",
             ResponseHeaderField::Server => "Server",
+            ResponseHeaderField::TransferEncoding => "Transfer-Encoding",
         }.to_string()
     }
 }
@@ -234,6 +266,7 @@ impl FromStr for ResponseHeaderField {
             "Date" => Ok(ResponseHeaderField::Date),
             "Last-Modified" => Ok(ResponseHeaderField::LastModified),
             "Server" => Ok(ResponseHeaderField::Server),
+            "Transfer-Encoding" => Ok(ResponseHeaderField::TransferEncoding),
             _ => Err(()),
         }
     }
@@ -282,7 +315,7 @@ pub struct Request {
 #[derive(Debug)]
 pub struct RequestHeader {
     pub request_line: RequestLine,
-    pub header_lines: collections::HashMap<RequestHeaderField, String>,
+    pub header_lines: HashMap<RequestHeaderField, String>,
 }
 
 #[derive(Debug,PartialEq,Eq,Hash)]
@@ -325,5 +358,5 @@ impl ToString for Method {
 
 #[derive(Debug)]
 pub struct Remote {
-    pub addr: net::SocketAddr,
+    pub addr: SocketAddr,
 }
