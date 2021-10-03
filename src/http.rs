@@ -119,10 +119,10 @@ fn parse_request(stream: &mut net::TcpStream) -> Result<Request, Error> {
     })
 }
 
-fn parse_header_line(line: &str) -> Result<(HeaderField, String), Error> {
+fn parse_header_line(line: &str) -> Result<(RequestHeaderField, String), Error> {
     let fields = line.split_once(":")
         .ok_or(Error::new("Could not parse header line".to_string()))?;
-    let field_name = HeaderField::from_str(fields.0)?;
+    let field_name = RequestHeaderField::from_str(fields.0)?;
     let field_value = String::from(fields.1.trim());
     let header_line = (field_name, field_value);
     // println!("-- header_line: {:?} --", header_line);
@@ -168,7 +168,7 @@ pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Respons
                 status_code,
                 http_version: String::from(HTTP_VERSION),
             },
-            header_lines: Vec::new(),
+            header_lines: collections::HashMap::new(),
         },
         body: String::new(),
     }
@@ -193,19 +193,49 @@ impl ToString for Response {
 #[derive(Debug)]
 pub struct ResponseHeader {
     pub status_line: StatusLine,
-    pub header_lines: Vec<(String, String)>, // convert to a map
+    pub header_lines: collections::HashMap<ResponseHeaderField, String>,
 }
 impl ToString for ResponseHeader {
     fn to_string(&self) -> String {
         let mut s = String::new();
         s.push_str(&self.status_line.to_string());
-        for header_line in self.header_lines.as_slice() {
-            s.push_str(header_line.0.trim());
+        for (field, value) in self.header_lines.iter() {
+            s.push_str(&field.to_string());
             s.push_str(": ");
-            s.push_str(header_line.1.trim());
+            s.push_str(value.trim());
             s.push_str(CRLF);
         }
         s
+    }
+}
+
+#[derive(Debug,PartialEq,Eq,Hash)]
+pub enum ResponseHeaderField {
+    ContentLength, ContentType, Date, LastModified, Server
+}
+impl ToString for ResponseHeaderField {
+    fn to_string(&self) -> String {
+        match self {
+            ResponseHeaderField::ContentLength => "Content-Length",
+            ResponseHeaderField::ContentType => "Content-Type",
+            ResponseHeaderField::Date => "Date",
+            ResponseHeaderField::LastModified => "Last-Modified",
+            ResponseHeaderField::Server => "Server",
+        }.to_string()
+    }
+}
+impl FromStr for ResponseHeaderField {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Content-Length" => Ok(ResponseHeaderField::ContentLength),
+            "Content-Type" => Ok(ResponseHeaderField::ContentType),
+            "Date" => Ok(ResponseHeaderField::Date),
+            "Last-Modified" => Ok(ResponseHeaderField::LastModified),
+            "Server" => Ok(ResponseHeaderField::Server),
+            _ => Err(()),
+        }
     }
 }
 
@@ -232,13 +262,13 @@ pub enum StatusCode {
 impl ToString for StatusCode {
     fn to_string(&self) -> String {
         match self {
-            StatusCode::Ok => "200 OK".to_string(),
-            StatusCode::NotModified => "304 Not Modified".to_string(),
-            StatusCode::BadRequest => "400 Bad Request".to_string(),
-            StatusCode::Forbidden => "403 Forbidden".to_string(),
-            StatusCode::NotFound => "404 Not Found".to_string(),
-            StatusCode::InternalServerError => "500 Internal Server Error".to_string(),
-        }
+            StatusCode::Ok => "200 OK",
+            StatusCode::NotModified => "304 Not Modified",
+            StatusCode::BadRequest => "400 Bad Request",
+            StatusCode::Forbidden => "403 Forbidden",
+            StatusCode::NotFound => "404 Not Found",
+            StatusCode::InternalServerError => "500 Internal Server Error",
+        }.to_string()
     }
 }
 
@@ -252,22 +282,22 @@ pub struct Request {
 #[derive(Debug)]
 pub struct RequestHeader {
     pub request_line: RequestLine,
-    pub header_lines: collections::HashMap<HeaderField, String>,
+    pub header_lines: collections::HashMap<RequestHeaderField, String>,
 }
 
 #[derive(Debug,PartialEq,Eq,Hash)]
-pub enum HeaderField {
+pub enum RequestHeaderField {
     Host, IfModifiedSince, UserAgent, NotSupported
 }
-impl FromStr for HeaderField {
+impl FromStr for RequestHeaderField {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "If-Modified-Since" => HeaderField::IfModifiedSince,
-            "Host" => HeaderField::Host,
-            "User-Agent" => HeaderField::UserAgent,
-            _ => HeaderField::NotSupported,
+            "If-Modified-Since" => RequestHeaderField::IfModifiedSince,
+            "Host" => RequestHeaderField::Host,
+            "User-Agent" => RequestHeaderField::UserAgent,
+            _ => RequestHeaderField::NotSupported,
         })
     }
 }

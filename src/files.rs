@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs;
 use std::io;
@@ -74,10 +75,9 @@ impl Files {
                     chrono::offset::Utc
                 )
             );
-            let mut header_lines = vec![
-                ("Content-Length".to_string(), (content.len() + 2).to_string()),
-                ("Last-Modified".to_string(), modified_str),
-            ];
+            let mut header_lines = HashMap::new();
+            header_lines.insert(ResponseHeaderField::ContentLength, (content.len() + 2).to_string());
+            header_lines.insert(ResponseHeaderField::LastModified, modified_str);
             if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
                 let content_type = match extension {
                     "txt" => Some("text/plain"),
@@ -86,7 +86,7 @@ impl Files {
                     _ => None,
                 };
                 if let Some(content_type) = content_type {
-                    header_lines.push(("Content-Type".to_string(), content_type.to_string()));
+                    header_lines.insert(ResponseHeaderField::ContentType, content_type.to_string());
                 }
             }
             header_lines

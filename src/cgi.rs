@@ -1,7 +1,8 @@
-use std::collections;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path;
 use std::process;
+use std::str::FromStr;
 use crate::config::*;
 use crate::error::{Error,HttpError};
 use crate::http::*;
@@ -19,7 +20,7 @@ impl Cgi<'_> {
         let remote_addr = request.remote.addr.to_string();
         let request_method = request.header.request_line.method.to_string();
         let server_port = self.server_config.listen_port.to_string();
-        let envs: collections::HashMap<&str, &str> = [
+        let envs: HashMap<&str, &str> = [
             ("QUERY_STRING", request.header.request_line.query_string.as_str()),
             ("REMOTE_ADDR", &remote_addr),
             // ("REMOTE_HOST", ""), NULL if not provided
@@ -41,7 +42,7 @@ impl Cgi<'_> {
             .spawn()
             .map_err(|e| e.into())
             .and_then(|mut child| {
-                println!("-- body: {} --", request.body);
+                // println!("-- body: {} --", request.body);
                 child.stdin
                     .take()
                     .unwrap()
@@ -60,7 +61,7 @@ impl Cgi<'_> {
             })
             .and_then(|mut stdout| process_cgi_output(&mut stdout))
             .map(|(mut headers, body)| {
-                headers.push(("Content-Length".to_string(), (body.len() + 2).to_string()));
+                headers.insert(ResponseHeaderField::ContentLength, (body.len() + 2).to_string());
                 Response {
                     header: ResponseHeader {
                         status_line: StatusLine {
@@ -79,19 +80,21 @@ impl Cgi<'_> {
     }
 }
 
-fn process_cgi_output(s: &mut str) -> Result<(Vec<(String, String)>, String), Error> {
-    println!("-- cgi output --");
-    println!("{}", s);
+fn process_cgi_output(s: &mut str) -> Result<(HashMap<ResponseHeaderField, String>, String), Error> {
+    // println!("-- cgi output --");
+    // println!("{}", s);
     let mut sections = s.split("\n\n");
     let headers = sections.next()
         .and_then(|headers| {
             headers.split("\n")
-                .fold(Some(Vec::new()), |vec, header| {
-                    vec.and_then(|mut vec| {
+                .fold(Some(HashMap::new()), |map, header| {
+                    map.and_then(|mut map| {
                         header.split_once(":")
-                            .map(|(field, value)| (field.to_string(), value.trim().to_string()))
-                            .map(|header| vec.push(header))
-                            .map(|_| vec)
+                            .and_then(|(field, value)| {
+                                ResponseHeaderField::from_str(field).map(|field| (field, value.trim().to_string())).ok()
+                            })
+                            .map(|(field, value)| map.insert(field, value))
+                            .map(|_| map)
                     })
                 })
         })

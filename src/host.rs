@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::BitAnd;
 use std::os::unix::fs::PermissionsExt;
@@ -25,15 +26,15 @@ impl<'a> Host<'a> {
 impl RequestHandler for Host<'_> {
     fn handle(&self, request: Request) -> Response {
         let mut response = self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message));
-        response.header.header_lines.push(("Server".to_string(), "Rust/0.1".to_string()));
-        response.header.header_lines.push(("Date".to_string(), now_1123()));
+        response.header.header_lines.insert(ResponseHeaderField::Server, "Rust/0.1".to_string());
+        response.header.header_lines.insert(ResponseHeaderField::Date, now_1123());
         response
     }
 }
 
 impl<'a> Host<'a> {
     fn handle_result(&self, request: Request) -> Result<Response, error::HttpError> {
-        let host_path = request.header.header_lines.get(&HeaderField::Host)
+        let host_path = request.header.header_lines.get(&RequestHeaderField::Host)
             .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;
         let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
 
@@ -60,7 +61,7 @@ impl<'a> Host<'a> {
             return self.cgi.handle(path, request, virtual_host);
         }
 
-        if let Some(since) = request.header.header_lines.get(&HeaderField::IfModifiedSince) {
+        if let Some(since) = request.header.header_lines.get(&RequestHeaderField::IfModifiedSince) {
             let since = parse_date_1123(since).map_err(|e| error::HttpError { status: StatusCode::BadRequest, message: Some(e.message) })?;
             let mod_since = files::Files::modified_since(&path, time::Duration::from_secs(since.timestamp().try_into().unwrap())).unwrap_or(true);
             if !mod_since {
@@ -71,7 +72,7 @@ impl<'a> Host<'a> {
                                 status_code: StatusCode::NotModified,
                                 http_version: String::from(HTTP_VERSION),
                             },
-                            header_lines: Vec::new(),
+                            header_lines: HashMap::new(),
                         },
                         body: String::new(),
                     }
@@ -97,17 +98,17 @@ fn heartbeat() -> Result<Response, error::HttpError> {
                     status_code: StatusCode::Ok,
                     http_version: String::from(HTTP_VERSION),
                 },
-                header_lines: Vec::new(),
+                header_lines: HashMap::new(),
             },
             body: String::new(),
         }
     )
 }
 
-fn content_negotiation(request_target: RequestTarget, header_lines: &std::collections::HashMap<HeaderField, String>) -> Result<(path::PathBuf, std::fs::Metadata), error::HttpError> {
+fn content_negotiation(request_target: RequestTarget, header_lines: &std::collections::HashMap<RequestHeaderField, String>) -> Result<(path::PathBuf, std::fs::Metadata), error::HttpError> {
     let path = request_target.path;
     if request_target.is_dir {
-        if let Some(user_agent) = header_lines.get(&HeaderField::UserAgent) {
+        if let Some(user_agent) = header_lines.get(&RequestHeaderField::UserAgent) {
             if user_agent.contains("iPhone") || user_agent.contains("Mobile") {
                 let mobile_path = path.join("index_m.html");
                 let metadata = metadata_or_400(&mobile_path);
