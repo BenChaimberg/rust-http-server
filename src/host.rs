@@ -49,7 +49,7 @@ impl<'a> Host<'a> {
         };
 
         if metadata.is_dir() {
-            // look for index.html under this path
+            return error_response::<String>(StatusCode::NotFound, None);
         }
 
         if metadata.permissions().mode().bitand(0o1).eq(&0o1) {
@@ -97,6 +97,10 @@ fn get_virtual_host<'a>(virtual_hosts: &'a Vec<VirtualHost>, host: &str) -> &'a 
 }
 
 fn parse_path(root_path: &path::PathBuf, request_target: &str) -> Result<path::PathBuf, error::HttpError> {
+    let mut request_target = request_target.to_string();
+    if request_target.ends_with("/") {
+        request_target.push_str("index.html");
+    }
     let mut request_target = path::Path::new(&request_target);
     if request_target.has_root() {
         request_target = request_target.strip_prefix("/").unwrap();
