@@ -8,7 +8,7 @@ use crate::cgi;
 use crate::error;
 use crate::files;
 use crate::http::*;
-use crate::time::parse_date_1123;
+use crate::time::{now_1123, parse_date_1123};
 
 pub struct Host<'a> {
     server_config: &'a ServerConfig,
@@ -24,7 +24,10 @@ impl<'a> Host<'a> {
 
 impl RequestHandler for Host<'_> {
     fn handle(&self, request: Request) -> Response {
-        self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message))
+        let mut response = self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message));
+        response.header.header_lines.push(("Server".to_string(), "Rust/0.1".to_string()));
+        response.header.header_lines.push(("Date".to_string(), now_1123()));
+        response
     }
 }
 

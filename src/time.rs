@@ -1,6 +1,13 @@
 use std::convert::TryInto;
 use crate::error;
 
+pub fn now_1123() -> String {
+    let now_2822 = chrono::Utc::now().to_rfc2822();
+    let mut now_1123 = now_2822[..(now_2822.len()-5)].to_string();
+    now_1123.push_str("GMT");
+    now_1123
+}
+
 pub fn parse_date_1123(s: &str) -> Result<chrono::DateTime<chrono::offset::Utc>, error::Error> {
     let (_, s) = parse_wkday(s)?;
     let s = discard_char(',', s)?;
