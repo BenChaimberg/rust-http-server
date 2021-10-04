@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use crate::error;
+use crate::parse::{discard_char, discard_string};
 
 pub fn now_1123() -> String {
     to_1123(chrono::Utc::now())
@@ -105,21 +106,5 @@ fn parse_digit(s: &str) -> Result<(i32, &str), error::Error> {
         "8" => Ok((8, rest)),
         "9" => Ok((9, rest)),
         _ => Err(error::Error::new("Could not parse digit".to_string())),
-    }
-}
-
-fn discard_string<'a>(to_find: &str, s: &'a str) -> Result<&'a str, error::Error> {
-    if s.starts_with(to_find) {
-        Ok(&s[to_find.len()..])
-    } else {
-        Err(error::Error::new(format!("Could not parse '{}'", to_find)))
-    }
-}
-
-fn discard_char(to_find: char, s: &str) -> Result<&str, error::Error> {
-    if s.starts_with(to_find) {
-        Ok(&s[1..])
-    } else {
-        Err(error::Error::new(format!("Could not parse '{}'", to_find)))
     }
 }

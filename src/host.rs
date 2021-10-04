@@ -3,6 +3,7 @@ use std::convert::TryInto;
 use std::ops::BitAnd;
 use std::os::unix::fs::PermissionsExt;
 use std::path;
+use std::str::FromStr;
 use std::time;
 use crate::config::*;
 use crate::cgi;
@@ -19,7 +20,15 @@ pub struct Host<'a> {
 
 impl<'a> Host<'a> {
     pub fn new(server_config: &'a ServerConfig) -> Host {
-        Host { server_config, cgi: cgi::Cgi::new(server_config), files: files::Files::new(server_config.cache_size.unwrap_or(1024)) }
+        Host {
+            server_config,
+            cgi: cgi::Cgi::new(server_config),
+            files: files::Files::new(
+                server_config.directives.get(&Directive::CacheSize)
+                    .and_then(|cache_size| u32::from_str(cache_size).ok())
+                    .unwrap_or(1024)
+            )
+        }
     }
 }
 
@@ -42,7 +51,10 @@ impl<'a> Host<'a> {
             return heartbeat();
         }
 
-        let request_target = parse_path(&virtual_host.document_root, &request.header.request_line.request_path)?;
+        let document_root = &virtual_host.directives.get(&Directive::DocumentRoot)
+            .and_then(|document_root| path::Path::new(document_root).canonicalize().ok())
+            .ok_or(error::HttpError { status: StatusCode::InternalServerError, message: None })?;
+        let request_target = parse_path(document_root, &request.header.request_line.request_path)?;
 
         match request.header.request_line.method {
             Method::Get => self.handle_get(request_target, request, virtual_host),
@@ -131,8 +143,10 @@ fn metadata_or_400(path: &path::PathBuf) -> Result<std::fs::Metadata, error::Htt
 
 fn get_virtual_host<'a>(virtual_hosts: &'a Vec<VirtualHost>, host: &str) -> &'a VirtualHost {
     for virtual_host in virtual_hosts.iter() {
-        if virtual_host.server_name == host {
-            return &virtual_host;
+        if let Some(server_name) = virtual_host.directives.get(&Directive::ServerName) {
+            if server_name == host {
+                return &virtual_host;
+            }
         }
     }
     return &virtual_hosts.first().unwrap();
