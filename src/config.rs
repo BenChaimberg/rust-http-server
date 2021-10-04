@@ -5,20 +5,20 @@ use std::str::FromStr;
 use crate::error::Error;
 use crate::parse::{discard_char, discard_string};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ServerConfig {
     pub directives: HashMap<Directive, String>,
     pub virtual_hosts: Vec<VirtualHost>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VirtualHost {
     pub directives: HashMap<Directive, String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Directive {
-    CacheSize, DocumentRoot, ListenPort, ServerName
+    CacheSize, DocumentRoot, ListenPort, ServerName, ThreadPoolSize
 }
 impl FromStr for Directive {
     type Err = ();
@@ -28,6 +28,7 @@ impl FromStr for Directive {
             "DocumentRoot" => Ok(Directive::DocumentRoot),
             "Listen" => Ok(Directive::ListenPort),
             "ServerName" => Ok(Directive::ServerName),
+            "ThreadPoolSize" => Ok(Directive::ThreadPoolSize),
             _ => Err(())
         }
     }
