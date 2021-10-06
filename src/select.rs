@@ -22,7 +22,7 @@ impl EventLoop {
     pub fn new(command_queue: CommandQueue) -> Result<Self, Error> {
         let poll = Poll::new()?;
         let events = Events::with_capacity(128);
-        let mut event_sources = HashMap::new();
+        let event_sources = HashMap::new();
 
         Ok(EventLoop { poll, events, event_sources, command_queue })
     }
@@ -33,8 +33,8 @@ impl EventLoop {
         }
     }
 
-    pub fn submit(&mut self, command: Command) {
-        self.command_queue.send(command);
+    pub fn submit(&self, command: Command) -> Result<(), Error> {
+        self.command_queue.send(command)
     }
 
     fn next(&mut self) -> Result<(), Error> {
@@ -53,10 +53,7 @@ impl EventLoop {
                         HandleEventResponse::ModifyInterests(interests) => {
                             source.reregister(self.poll.registry(), token, interests)?;
                         },
-                        HandleEventResponse::CloseSource => {
-                            source.deregister(self.poll.registry())?;
-                            self.event_sources.remove(&token);
-                        },
+                        HandleEventResponse::CloseSource => self.submit(Box::new(move || Ok(Some(CommandResponse::CloseSource(token)))))?,
                     };
                 },
                 Err(e) => {
@@ -67,10 +64,11 @@ impl EventLoop {
 
         loop {
             match self.command_queue.try_recv() {
-                Ok(command) => self.execute_command(command),
+                Ok(command) => self.execute_command(command)?,
                 Err(TryRecvError::Empty) => break,
                 Err(_) => {
-                    println!("Sending half of command channel has disconnected");
+                    println!("Sending half of command channel has disconnected; this is probably a fatal error but keep processing IO anyway");
+                    break;
                 },
             };
         }
@@ -78,17 +76,17 @@ impl EventLoop {
         Ok(())
     }
 
-    fn execute_command(&mut self, command: Command) {
-        match (command.execute)() {
+    fn execute_command(&mut self, command: Command) -> Result<(), Error> {
+        match (command)() {
             Ok(response) => if let Some(response) = response {
                 match response {
                     CommandResponse::NewSource(token, mut source, interests) => {
-                        source.register(self.poll.registry(), token, interests);
+                        source.register(self.poll.registry(), token, interests)?;
                         self.event_sources.insert(token, source);
                     },
                     CommandResponse::CloseSource(token) => {
                         if let Some(mut listener_source) = self.event_sources.remove(&token) {
-                            listener_source.deregister(self.poll.registry());
+                            listener_source.deregister(self.poll.registry())?;
                         } else {
                             println!("Listener has already been shut down")
                         }
@@ -99,6 +97,7 @@ impl EventLoop {
                 println!("Command produced error: {:#?}", e);
             },
         }
+        Ok(())
     }
 }
 
@@ -106,9 +105,7 @@ pub enum CommandResponse {
     NewSource(Token, EventSource, Interest),
     CloseSource(Token),
 }
-pub struct Command {
-    pub execute: Box<dyn FnOnce() -> Result<Option<CommandResponse>, Error> + Send>,
-}
+pub type Command = Box<dyn FnOnce() -> Result<Option<CommandResponse>, Error> + Send>;
 pub struct CommandQueue {
     send: Sender<Command>,
     recv: Receiver<Command>,
@@ -117,8 +114,8 @@ impl CommandQueue {
     pub fn new(send: Sender<Command>, recv: Receiver<Command>) -> Self {
         CommandQueue { send, recv }
     }
-    pub fn send(&self, command: Command) {
-        self.send.send(command);
+    pub fn send(&self, command: Command) -> Result<(), Error> {
+        self.send.send(command).map_err(|e| e.into())
     }
     pub fn try_recv(&self) -> Result<Command, TryRecvError> {
         self.recv.try_recv()
@@ -187,7 +184,7 @@ fn handle_stream_event(event: &Event, stream: &mut TcpStream, connection_state: 
 
 // TODO: see if we can add Handle for async request handling
 #[derive(Debug)]
-enum ConnectionState {
+pub enum ConnectionState {
     Read, Write(http::Response)
 }
 
