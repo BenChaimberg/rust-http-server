@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::Duration;
 use mio::{Events, Interest, Poll, Registry, Token};
 use mio::event::Event;
 use mio::net::{TcpListener, TcpStream};
@@ -7,58 +9,129 @@ use crate::error::Error;
 use crate::host;
 use crate::http;
 
-const SERVER: Token = Token(0);
+const POLL_TIMEOUT: Duration = Duration::from_millis(1000);
 
 pub struct EventLoop {
     poll: Poll,
     events: Events,
     event_sources: HashMap<Token, EventSource>,
+    command_queue: CommandQueue,
 }
 
 impl EventLoop {
-    pub fn new(mut listener: TcpListener, server_config: config::ServerConfig) -> Result<Self, Error> {
+    pub fn new(command_queue: CommandQueue) -> Result<Self, Error> {
         let poll = Poll::new()?;
         let events = Events::with_capacity(128);
-        poll.registry().register(&mut listener, SERVER, Interest::READABLE)?;
-
         let mut event_sources = HashMap::new();
-        event_sources.insert(SERVER, EventSource::ListenerEventSource(listener, 0, server_config));
 
-        Ok(EventLoop { poll, events, event_sources })
+        Ok(EventLoop { poll, events, event_sources, command_queue })
     }
 
-    pub fn next(&mut self) -> Result<(), Error> {
-        self.poll.poll(&mut self.events, None)?;
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            self.next()?;
+        }
+    }
+
+    pub fn submit(&mut self, command: Command) {
+        self.command_queue.send(command);
+    }
+
+    fn next(&mut self) -> Result<(), Error> {
+        self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))?;
+
         for event in self.events.iter() {
             let token = event.token();
             let source = self.event_sources.get_mut(&token).ok_or(Error::new(format!("Could not find handler for token: {}", token.0)))?;
-            if let Ok(Some(response)) = source.handle_event(event) {
-                match response {
-                    HandleEventResponse::NewEventSource(token, mut new_source, interests) => {
-                        new_source.register(self.poll.registry(), token, interests)?;
-                        self.event_sources.insert(token, new_source);
-                    },
-                    HandleEventResponse::ModifyInterests(interests) => {
-                        source.reregister(self.poll.registry(), token, interests)?;
-                    },
-                    HandleEventResponse::CloseSource => {
-                        source.deregister(self.poll.registry())?;
-                        self.event_sources.remove(&token);
-                    }
-                }
+            match source.handle_event(event) {
+                Ok(response) => if let Some(response) = response {
+                    match response {
+                        HandleEventResponse::NewSource(token, mut new_source, interests) => {
+                            new_source.register(self.poll.registry(), token, interests)?;
+                            self.event_sources.insert(token, new_source);
+                        },
+                        HandleEventResponse::ModifyInterests(interests) => {
+                            source.reregister(self.poll.registry(), token, interests)?;
+                        },
+                        HandleEventResponse::CloseSource => {
+                            source.deregister(self.poll.registry())?;
+                            self.event_sources.remove(&token);
+                        },
+                    };
+                },
+                Err(e) => {
+                    println!("Handler for token {} produced error: {:#?}", token.0, e);
+                },
             }
         }
+
+        loop {
+            match self.command_queue.try_recv() {
+                Ok(command) => self.execute_command(command),
+                Err(TryRecvError::Empty) => break,
+                Err(_) => {
+                    println!("Sending half of command channel has disconnected");
+                },
+            };
+        }
+
         Ok(())
+    }
+
+    fn execute_command(&mut self, command: Command) {
+        match (command.execute)() {
+            Ok(response) => if let Some(response) = response {
+                match response {
+                    CommandResponse::NewSource(token, mut source, interests) => {
+                        source.register(self.poll.registry(), token, interests);
+                        self.event_sources.insert(token, source);
+                    },
+                    CommandResponse::CloseSource(token) => {
+                        if let Some(mut listener_source) = self.event_sources.remove(&token) {
+                            listener_source.deregister(self.poll.registry());
+                        } else {
+                            println!("Listener has already been shut down")
+                        }
+                    },
+                };
+            },
+            Err(e) => {
+                println!("Command produced error: {:#?}", e);
+            },
+        }
+    }
+}
+
+pub enum CommandResponse {
+    NewSource(Token, EventSource, Interest),
+    CloseSource(Token),
+}
+pub struct Command {
+    pub execute: Box<dyn FnOnce() -> Result<Option<CommandResponse>, Error> + Send>,
+}
+pub struct CommandQueue {
+    send: Sender<Command>,
+    recv: Receiver<Command>,
+}
+impl CommandQueue {
+    pub fn new(send: Sender<Command>, recv: Receiver<Command>) -> Self {
+        CommandQueue { send, recv }
+    }
+    pub fn send(&self, command: Command) {
+        self.send.send(command);
+    }
+    pub fn try_recv(&self) -> Result<Command, TryRecvError> {
+        self.recv.try_recv()
     }
 }
 
 enum HandleEventResponse {
-    NewEventSource(Token, EventSource, Interest),
+    NewSource(Token, EventSource, Interest),
     ModifyInterests(Interest),
     CloseSource,
 }
 
-enum EventSource {
+pub enum EventSource {
     ListenerEventSource(TcpListener, usize, config::ServerConfig),
     StreamEventSource(TcpStream, ConnectionState, host::Host),
 }
@@ -124,12 +197,12 @@ fn handle_listener_event(_: &Event, listener: &mut TcpListener, token_counter: &
             *token_counter += 1;
             let token = Token(*token_counter);
             let stream_source = EventSource::StreamEventSource(stream, ConnectionState::Read, host::Host::new(server_config.clone()));
-            Ok(Some(HandleEventResponse::NewEventSource(token, stream_source, Interest::READABLE)))
+            Ok(Some(HandleEventResponse::NewSource(token, stream_source, Interest::READABLE)))
         },
-        Err(e) => if e.kind() != std::io::ErrorKind::WouldBlock {
-            Err(e.into())
-        } else {
+        Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
             Ok(None)
+        } else {
+            Err(e.into())
         },
     }
 }
