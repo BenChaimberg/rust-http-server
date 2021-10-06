@@ -12,28 +12,28 @@ use crate::files;
 use crate::http::*;
 use crate::time::{now_1123, parse_date_1123};
 
-pub struct Host<'a> {
-    server_config: &'a ServerConfig,
-    cgi: cgi::Cgi<'a>,
+pub struct Host {
+    server_config: ServerConfig,
+    cgi: cgi::Cgi,
     files: files::Files,
 }
 
-impl<'a> Host<'a> {
-    pub fn new(server_config: &'a ServerConfig) -> Host {
+impl Host {
+    pub fn new(server_config: ServerConfig) -> Host {
+        let files = files::Files::new(
+            server_config.directives.get(&Directive::CacheSize)
+                .and_then(|cache_size| u32::from_str(cache_size).ok())
+                .unwrap_or(1024)
+        );
+        let cgi = cgi::Cgi::new(server_config.clone());
         Host {
             server_config,
-            cgi: cgi::Cgi::new(server_config),
-            files: files::Files::new(
-                server_config.directives.get(&Directive::CacheSize)
-                    .and_then(|cache_size| u32::from_str(cache_size).ok())
-                    .unwrap_or(1024)
-            )
+            cgi,
+            files,
         }
     }
-}
 
-impl RequestHandler for Host<'_> {
-    fn handle(&self, request: Request) -> Response {
+    pub fn handle(&self, request: Request) -> Response {
         let mut response = self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message));
         response.header.header_lines.insert(ResponseHeaderField::Server, "Rust/0.1".to_string());
         response.header.header_lines.insert(ResponseHeaderField::Date, now_1123());
@@ -41,7 +41,7 @@ impl RequestHandler for Host<'_> {
     }
 }
 
-impl<'a> Host<'a> {
+impl Host {
     fn handle_result(&self, request: Request) -> Result<Response, error::HttpError> {
         let host_path = request.header.header_lines.get(&RequestHeaderField::Host)
             .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;

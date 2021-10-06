@@ -1,36 +1,29 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::str;
 use std::str::FromStr;
+use mio::net::TcpStream;
 use crate::error::Error;
 
 pub const HTTP_VERSION: &str = "HTTP/1.1";
 const CRLF: &str = "\r\n";
 const BUF_SIZE: usize = 32;
 
-pub trait RequestHandler {
-    fn handle<'a>(&self, r: Request) -> Response;
-}
-
-pub fn handle_client(mut stream: TcpStream, handler: &impl RequestHandler) -> Result<(), Error> {
-    let request = parse_request(&mut stream)?;
-
-    let response = handler.handle(request);
-
+pub fn write_response(stream: &mut TcpStream, response: Response) -> Result<(), Error> {
     let chunk_len: usize = 1024;
     if response.header.header_lines.get(&ResponseHeaderField::ContentLength)
         .and_then(|content_length| u32::from_str(content_length).ok())
         .map(|content_length| content_length > chunk_len.try_into().unwrap())
-        .unwrap_or(true) {
+        .unwrap_or(true)
+    {
         // arbitrarily choose a maximum response body length, after which responses will be encoded using chunked transfer coding
         // this is not necessarily the intended use case for chunked transfer coding, but will serve as a demo
-        write_chunked(response, &mut stream, chunk_len)?;
+        write_chunked(response, stream, chunk_len)?;
     } else {
         stream.write_all(response.to_string().as_bytes())?;
     }
-
     Ok(())
 }
 
@@ -64,7 +57,7 @@ fn write_chunk(chunk: &[u8], chunk_len: usize, stream: &mut TcpStream) -> Result
     Ok(())
 }
 
-fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
+pub fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
     let mut buf = [0; BUF_SIZE];
     let mut request_line: Option<RequestLine> = None;
     let mut body = String::new();
@@ -205,7 +198,7 @@ pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Respons
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Response {
     pub header: ResponseHeader,
     pub body: String,
@@ -221,7 +214,7 @@ impl ToString for Response {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ResponseHeader {
     pub status_line: StatusLine,
     pub header_lines: HashMap<ResponseHeaderField, String>,
@@ -240,7 +233,7 @@ impl ToString for ResponseHeader {
     }
 }
 
-#[derive(Debug,PartialEq,Eq,Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ResponseHeaderField {
     ContentLength, ContentType, Date, LastModified, Server, TransferEncoding
 }
@@ -272,7 +265,7 @@ impl FromStr for ResponseHeaderField {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StatusLine {
     pub http_version: String,
     pub status_code: StatusCode,
@@ -288,7 +281,7 @@ impl ToString for StatusLine {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum StatusCode {
     Ok, NotModified, BadRequest, Forbidden, NotFound, InternalServerError
 }

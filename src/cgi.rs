@@ -7,15 +7,15 @@ use crate::config::*;
 use crate::error::{Error,HttpError};
 use crate::http::*;
 
-pub struct Cgi<'a> {
-    server_config: &'a ServerConfig,
+pub struct Cgi {
+    server_config: ServerConfig,
 }
-impl<'a> Cgi<'a> {
-    pub fn new(server_config: &'a ServerConfig) -> Cgi {
+impl Cgi {
+    pub fn new(server_config: ServerConfig) -> Cgi {
         Cgi { server_config }
     }
 }
-impl Cgi<'_> {
+impl Cgi {
     pub fn handle(&self, path: path::PathBuf, request: Request, virtual_host: &VirtualHost) -> Result<Response, HttpError> {
         let remote_addr = request.remote.addr.to_string();
         let request_method = request.header.request_line.method.to_string();

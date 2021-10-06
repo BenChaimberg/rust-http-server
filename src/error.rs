@@ -1,4 +1,5 @@
 use std::io;
+use std::net;
 use std::num;
 use std::str;
 use std::sync::mpsc;
@@ -49,6 +50,11 @@ impl From<mpsc::RecvError> for Error {
 }
 impl <T> From<mpsc::SendError<T>> for Error {
     fn from(e: mpsc::SendError<T>) -> Self {
+        Error::new(e.to_string())
+    }
+}
+impl From<net::AddrParseError> for Error {
+    fn from(e: net::AddrParseError) -> Self {
         Error::new(e.to_string())
     }
 }
