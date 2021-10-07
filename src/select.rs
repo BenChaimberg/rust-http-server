@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::os::unix::prelude::AsRawFd;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
-use mio::{Events, Interest, Poll, Registry, Token};
+use mio::{Events, Interest, Poll, Registry, Token, event};
 use mio::event::Event;
 use mio::net::{TcpListener, TcpStream};
+use mio::unix::SourceFd;
 use crate::config;
 use crate::error::Error;
 use crate::host;
@@ -50,7 +52,7 @@ impl EventLoop {
                     };
                 },
                 Err(e) => {
-                    println!("Handler for token {} produced error: {:#?}", token.0, e);
+                    eprintln!("Handler for token {} produced error: {:#?}", token.0, e);
                 },
             }
         }
@@ -60,7 +62,7 @@ impl EventLoop {
                 Ok(command) => self.execute_command(command)?,
                 Err(TryRecvError::Empty) => break,
                 Err(_) => {
-                    println!("Sending half of command channel has disconnected; this is probably a fatal error but keep processing IO anyway");
+                    eprintln!("Sending half of command channel has disconnected; this is probably a fatal error but keep processing IO anyway");
                     break;
                 },
             };
@@ -81,20 +83,20 @@ impl EventLoop {
                         if let Some(source) = self.event_sources.get_mut(&token) {
                             source.reregister(self.poll.registry(), token, interests)?;
                         } else {
-                            println!("Could not find source associated with token {}", token.0);
+                            eprintln!("Could not find source associated with token {}", token.0);
                         }
                     },
                     CommandResponse::CloseSource(token) => {
-                        if let Some(mut listener_source) = self.event_sources.remove(&token) {
-                            listener_source.deregister(self.poll.registry())?;
+                        if let Some(mut source) = self.event_sources.remove(&token) {
+                            source.deregister(self.poll.registry())?;
                         } else {
-                            println!("Listener has already been shut down")
+                            eprintln!("Source {} has already been closed", token.0)
                         }
                     },
                 };
             },
             Err(e) => {
-                println!("Command produced error: {:#?}", e);
+                eprintln!("Command produced error: {:#?}", e);
             },
         }
         Ok(())
@@ -127,34 +129,65 @@ enum HandleEventResponse {
     Command(CommandResponse)
 }
 
+pub struct Stdin {
+    raw: std::io::Stdin,
+}
+impl Stdin {
+    pub fn new(stdin: std::io::Stdin) -> Self {
+        Stdin { raw: stdin }
+    }
+}
+impl event::Source for Stdin {
+    fn register(&mut self, registry: &Registry, token: Token, interests: Interest) -> std::io::Result<()> {
+        let raw_fd = self.raw.as_raw_fd();
+        let mut source_fd = SourceFd(&raw_fd);
+        source_fd.register(registry, token, interests)
+    }
+    fn reregister(&mut self, registry: &Registry, token: Token, interests: Interest) -> std::io::Result<()> {
+        let raw_fd = self.raw.as_raw_fd();
+        let mut source_fd = SourceFd(&raw_fd);
+        source_fd.reregister(registry, token, interests)
+    }
+    fn deregister(&mut self, registry: &Registry) -> std::io::Result<()> {
+        let raw_fd = self.raw.as_raw_fd();
+        let mut source_fd = SourceFd(&raw_fd);
+        source_fd.deregister(registry)
+    }
+}
+
 pub enum EventSource {
-    ListenerEventSource(TcpListener, usize, config::ServerConfig),
-    StreamEventSource(TcpStream, ConnectionState, host::Host),
+    TcpListener(TcpListener, usize, config::ServerConfig),
+    TcpStream(TcpStream, ConnectionState, host::Host),
+    Stdin(Stdin, Token),
 }
 
 impl EventSource {
     fn handle_event(&mut self, event: &Event, token: Token) -> Result<Option<HandleEventResponse>, Error> {
         match self {
-            Self::ListenerEventSource(listener, token_counter, server_config) => handle_listener_event(event, listener, token_counter, server_config),
-            Self::StreamEventSource(stream, connection_state, request_handler) => handle_stream_event(event, token, stream, connection_state, request_handler),
+            Self::TcpListener(listener, token_counter, server_config) => handle_listener_event(event, listener, token_counter, server_config),
+            Self::TcpStream(stream, connection_state, request_handler) => handle_stream_event(event, token, stream, connection_state, request_handler),
+            Self::Stdin(stdin, listener_token) => handle_stdin_event(event, stdin, listener_token),
         }
     }
     fn register(&mut self, registry: &Registry, token: Token, interests: Interest) -> Result<(), Error> {
         match self {
-            Self::ListenerEventSource(listener, _, _) => registry.register(listener, token, interests),
-            Self::StreamEventSource(stream, _, _) => registry.register(stream, token, interests),
+            Self::TcpListener(listener, _, _) => registry.register(listener, token, interests),
+            Self::TcpStream(stream, _, _) => registry.register(stream, token, interests),
+            Self::Stdin(stdin, _) => registry.register(stdin, token, interests),
         }.map_err(|e| e.into())
     }
     fn reregister(&mut self, registry: &Registry, token: Token, interests: Interest) -> Result<(), Error> {
         match self {
-            Self::ListenerEventSource(listener, _, _) => registry.reregister(listener, token, interests),
-            Self::StreamEventSource(stream, _, _) => registry.reregister(stream, token, interests),
+            Self::TcpListener(listener, _, _) => registry.reregister(listener, token, interests),
+            Self::TcpStream(stream, _, _) => registry.reregister(stream, token, interests),
+            Self::Stdin(stdin, _) => registry.reregister(stdin, token, interests),
         }.map_err(|e| e.into())
     }
     fn deregister(&mut self, registry: &Registry) -> Result<(), Error> {
         match self {
-            Self::ListenerEventSource(listener, _, _) => registry.deregister(listener),
-            Self::StreamEventSource(stream, _, _) => registry.deregister(stream),
+            Self::TcpListener(listener, _, _) => registry.deregister(listener),
+            Self::TcpStream(stream, _, _) => registry.deregister(stream),
+            Self::Stdin(stdin, _) => registry.deregister(stdin),
         }.map_err(|e| e.into())
     }
 }
@@ -164,7 +197,8 @@ fn handle_stream_event(event: &Event, token: Token, stream: &mut TcpStream, conn
         ConnectionState::Read => {
             if event.is_readable() {
                 let request = http::parse_request(stream)?;
-                *connection_state = ConnectionState::Write(request_handler.handle(request));
+                let response = request_handler.handle(request);
+                *connection_state = ConnectionState::Write(response);
                 Ok(Some(HandleEventResponse::Command(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))
             } else {
                 Ok(None)
@@ -192,7 +226,7 @@ fn handle_listener_event(_: &Event, listener: &mut TcpListener, token_counter: &
         Ok((stream, _)) => {
             *token_counter += 1;
             let token = Token(*token_counter);
-            let stream_source = EventSource::StreamEventSource(stream, ConnectionState::Read, host::Host::new(server_config.clone()));
+            let stream_source = EventSource::TcpStream(stream, ConnectionState::Read, host::Host::new(server_config.clone()));
             Ok(Some(HandleEventResponse::Command(CommandResponse::NewSource(token, stream_source, Interest::READABLE))))
         },
         Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -201,4 +235,19 @@ fn handle_listener_event(_: &Event, listener: &mut TcpListener, token_counter: &
             Err(e.into())
         },
     }
+}
+
+fn handle_stdin_event(event: &Event, stdin: &mut Stdin, listener_token: &mut Token) -> Result<Option<HandleEventResponse>, Error> {
+    if event.is_readable() {
+        let mut input = String::new();
+        stdin.raw.read_line(&mut input)?;
+        input = input.trim().to_string();
+        if input == "shutdown" {
+            println!("Closing the listener...");
+            return Ok(Some(HandleEventResponse::Command(CommandResponse::CloseSource(*listener_token))));
+        } else {
+            println!("Command not recognized. Type 'shutdown' to close the listener.");
+        }
+    }
+    Ok(None)
 }
