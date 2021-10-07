@@ -43,17 +43,10 @@ impl EventLoop {
         for event in self.events.iter() {
             let token = event.token();
             let source = self.event_sources.get_mut(&token).ok_or(Error::new(format!("Could not find handler for token: {}", token.0)))?;
-            match source.handle_event(event) {
+            match source.handle_event(event, token) {
                 Ok(response) => if let Some(response) = response {
                     match response {
-                        HandleEventResponse::NewSource(token, mut new_source, interests) => {
-                            new_source.register(self.poll.registry(), token, interests)?;
-                            self.event_sources.insert(token, new_source);
-                        },
-                        HandleEventResponse::ModifyInterests(interests) => {
-                            source.reregister(self.poll.registry(), token, interests)?;
-                        },
-                        HandleEventResponse::CloseSource => self.submit(Box::new(move || Ok(Some(CommandResponse::CloseSource(token)))))?,
+                        HandleEventResponse::Command(command) => self.submit(Box::new(move || Ok(Some(command))))?,
                     };
                 },
                 Err(e) => {
@@ -84,6 +77,13 @@ impl EventLoop {
                         source.register(self.poll.registry(), token, interests)?;
                         self.event_sources.insert(token, source);
                     },
+                    CommandResponse::ModifyInterests(token, interests) => {
+                        if let Some(source) = self.event_sources.get_mut(&token) {
+                            source.reregister(self.poll.registry(), token, interests)?;
+                        } else {
+                            println!("Could not find source associated with token {}", token.0);
+                        }
+                    },
                     CommandResponse::CloseSource(token) => {
                         if let Some(mut listener_source) = self.event_sources.remove(&token) {
                             listener_source.deregister(self.poll.registry())?;
@@ -103,6 +103,7 @@ impl EventLoop {
 
 pub enum CommandResponse {
     NewSource(Token, EventSource, Interest),
+    ModifyInterests(Token, Interest),
     CloseSource(Token),
 }
 pub type Command = Box<dyn FnOnce() -> Result<Option<CommandResponse>, Error> + Send>;
@@ -123,9 +124,7 @@ impl CommandQueue {
 }
 
 enum HandleEventResponse {
-    NewSource(Token, EventSource, Interest),
-    ModifyInterests(Interest),
-    CloseSource,
+    Command(CommandResponse)
 }
 
 pub enum EventSource {
@@ -134,10 +133,10 @@ pub enum EventSource {
 }
 
 impl EventSource {
-    fn handle_event(&mut self, event: &Event) -> Result<Option<HandleEventResponse>, Error> {
+    fn handle_event(&mut self, event: &Event, token: Token) -> Result<Option<HandleEventResponse>, Error> {
         match self {
             Self::ListenerEventSource(listener, token_counter, server_config) => handle_listener_event(event, listener, token_counter, server_config),
-            Self::StreamEventSource(stream, connection_state, request_handler) => handle_stream_event(event, stream, connection_state, request_handler),
+            Self::StreamEventSource(stream, connection_state, request_handler) => handle_stream_event(event, token, stream, connection_state, request_handler),
         }
     }
     fn register(&mut self, registry: &Registry, token: Token, interests: Interest) -> Result<(), Error> {
@@ -160,13 +159,13 @@ impl EventSource {
     }
 }
 
-fn handle_stream_event(event: &Event, stream: &mut TcpStream, connection_state: &mut ConnectionState, request_handler: &host::Host) -> Result<Option<HandleEventResponse>, Error> {
+fn handle_stream_event(event: &Event, token: Token, stream: &mut TcpStream, connection_state: &mut ConnectionState, request_handler: &host::Host) -> Result<Option<HandleEventResponse>, Error> {
     match connection_state {
         ConnectionState::Read => {
             if event.is_readable() {
                 let request = http::parse_request(stream)?;
                 *connection_state = ConnectionState::Write(request_handler.handle(request));
-                Ok(Some(HandleEventResponse::ModifyInterests(Interest::WRITABLE)))
+                Ok(Some(HandleEventResponse::Command(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))
             } else {
                 Ok(None)
             }
@@ -174,7 +173,7 @@ fn handle_stream_event(event: &Event, stream: &mut TcpStream, connection_state: 
         ConnectionState::Write(response) => {
             if event.is_writable() {
                 http::write_response(stream, response.clone())?;
-                Ok(Some(HandleEventResponse::CloseSource))
+                Ok(Some(HandleEventResponse::Command(CommandResponse::CloseSource(token))))
             } else {
                 Ok(None)
             }
@@ -194,7 +193,7 @@ fn handle_listener_event(_: &Event, listener: &mut TcpListener, token_counter: &
             *token_counter += 1;
             let token = Token(*token_counter);
             let stream_source = EventSource::StreamEventSource(stream, ConnectionState::Read, host::Host::new(server_config.clone()));
-            Ok(Some(HandleEventResponse::NewSource(token, stream_source, Interest::READABLE)))
+            Ok(Some(HandleEventResponse::Command(CommandResponse::NewSource(token, stream_source, Interest::READABLE))))
         },
         Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
             Ok(None)
