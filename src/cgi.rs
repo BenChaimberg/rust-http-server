@@ -16,7 +16,7 @@ impl Cgi {
     }
 }
 impl Cgi {
-    pub fn handle(&self, path: path::PathBuf, request: Request, virtual_host: &VirtualHost) -> Result<Response, HttpError> {
+    pub fn handle(&self, path: path::PathBuf, request: &Request, virtual_host: &VirtualHost) -> Result<Response, HttpError> {
         let remote_addr = request.remote.addr.to_string();
         let request_method = request.header.request_line.method.to_string();
         let internal_error = || -> HttpError { HttpError { status: StatusCode::InternalServerError, message: None } };

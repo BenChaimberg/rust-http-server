@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::str;
 use std::str::FromStr;
@@ -9,7 +9,6 @@ use crate::error::Error;
 
 pub const HTTP_VERSION: &str = "HTTP/1.1";
 const CRLF: &str = "\r\n";
-const BUF_SIZE: usize = 32;
 
 pub fn write_response(stream: &mut TcpStream, response: Response) -> Result<(), Error> {
     let chunk_len: usize = 1024;
@@ -57,90 +56,94 @@ fn write_chunk(chunk: &[u8], chunk_len: usize, stream: &mut TcpStream) -> Result
     Ok(())
 }
 
-pub fn parse_request(stream: &mut TcpStream) -> Result<Request, Error> {
-    let mut buf = [0; BUF_SIZE];
-    let mut request_line: Option<RequestLine> = None;
-    let mut body = String::new();
-    let mut header_lines = HashMap::new();
-
-    let mut continuation = String::new();
-    loop {
-        let bytes_read = stream.read(&mut buf)?;
-        if bytes_read > 0 {
-            continuation.push_str(str::from_utf8(&buf[..bytes_read])?);
-            let mut s = continuation.as_str();
-            // println!("-- raw request --");
+pub fn try_parse_request(latest: &[u8], incremental_request: IncrementalRequest) -> Result<IncrementalRequest, Error> {
+    // println!("-- current request: {:#?}", incremental_request);
+    match incremental_request {
+        IncrementalRequest::None(buf) => {
+            // println!("-- incr_req None");
+            let combined = [&buf, latest].concat();
+            let s = str::from_utf8(&combined)?;
+            // println!("-- raw request");
             // println!("{}", s);
-            let mut next_break = match s.find(CRLF) {
+            let next_break = match s.find(CRLF) {
                 None => {
-                    continuation = String::from(s);
-                    continue
+                    // println!("-- no CRLF");
+                    return Ok(IncrementalRequest::None(combined.into_boxed_slice()));
                 },
                 Some(i) => i,
             };
-            // println!("-- first break: {} --", next_break);
+            // println!("-- first break: {}", next_break);
 
-            if request_line.is_none() {
-                request_line = Some(parse_request_line(&s[..next_break])?);
-                s = &s[next_break+2..];
-                next_break = match s.find(CRLF) {
-                    None => {
-                        continuation = String::from(s);
-                        continue
-                    },
-                    Some(i) => i,
+            let request_line = parse_request_line(&s[..next_break])?;
+            // TODO: can I use the same next_break index to just slice the buffer instead of this string magic?
+            try_parse_request(&[], IncrementalRequest::RequestLine(request_line, s[next_break+2..].to_owned().into_boxed_str().into_boxed_bytes()))
+        },
+        IncrementalRequest::RequestLine(request_line, buf) => {
+            // println!("-- incr_req RequestLine");
+            let combined = [&buf, latest].concat();
+            let s = str::from_utf8(&combined)?;
+            // println!("-- raw request");
+            // println!("{}", s);
+            let next_break = match s.find(CRLF) {
+                None => {
+                    // println!("-- no CRLF");
+                    return Ok(IncrementalRequest::RequestLine(request_line, combined.into_boxed_slice()));
+                },
+                Some(i) => i,
+            };
+            // println!("-- first break: {}", next_break);
+
+            let mut header_lines = HashMap::new();
+            let header_line = parse_header_line(&s[..next_break])?;
+            header_lines.insert(header_line.0, header_line.1);
+            try_parse_request(&[], IncrementalRequest::HeaderLines(request_line, header_lines, s[next_break+2..].to_owned().into_boxed_str().into_boxed_bytes()))
+        },
+        IncrementalRequest::HeaderLines(request_line, mut header_lines, buf) => {
+            // println!("-- incr_req HeaderLines");
+            let combined = [&buf, latest].concat();
+            let s = str::from_utf8(&combined)?;
+            // println!("-- raw request");
+            // println!("{}", s);
+            let next_break = match s.find(CRLF) {
+                None => {
+                    // println!("-- no CRLF");
+                    return Ok(IncrementalRequest::HeaderLines(request_line, header_lines, combined.into_boxed_slice()));
+                },
+                Some(i) => i,
+            };
+            // println!("-- first break: {}", next_break);
+
+            let line = &s[..next_break];
+            if line.is_empty() {
+                let bytes_left = if let Some(content_len) = header_lines.get(&RequestHeaderField::ContentLength) {
+                    usize::from_str(content_len)?
+                } else {
+                    0
                 };
-            }
-            if request_line.is_none() {
-                break
-            }
-
-            // header lines
-            let mut do_continue = false;
-            loop {
-                let line = &s[..next_break];
-                // println!("-- line --");
-                // println!("{}", line);
-                if line.is_empty() {
-                    break
-                }
+                try_parse_request(&[], IncrementalRequest::Body(request_line, header_lines, String::new(), bytes_left, s[next_break+2..].to_owned().into_boxed_str().into_boxed_bytes()))
+            } else {
                 let header_line = parse_header_line(line)?;
                 header_lines.insert(header_line.0, header_line.1);
-
-                s = &s[next_break+2..];
-                next_break = match s.find(CRLF) {
-                    None => {
-                        do_continue = true;
-                        break
-                    },
-                    Some(i) => i,
-                };
+                try_parse_request(&[], IncrementalRequest::HeaderLines(request_line, header_lines, s[next_break+2..].to_owned().into_boxed_str().into_boxed_bytes()))
             }
-            if do_continue {
-                continuation = String::from(s);
-                continue
-            }
-
-            // should probably look at content length so we don't get overflowed
-            s = &s[next_break+2..];
-            body.push_str(s);
-            break
-        } else {
-            break
-        }
-    }
-
-    // println!("-- request_line: {:?} --", request_line);
-    // println!("-- header_lines: {:?} --", header_lines);
-
-    Ok(Request {
-        header: RequestHeader {
-            request_line: request_line.ok_or(Error::new("Could not parse request line".to_string()))?,
-            header_lines
         },
-        remote: Remote { addr: stream.peer_addr().unwrap() },
-        body,
-    })
+        IncrementalRequest::Body(request_line, header_lines, mut body, mut bytes_left, buf) => {
+            // println!("-- incr_req Body");
+            let combined = [&buf, latest].concat();
+            let s = str::from_utf8(&combined)?;
+            // println!("-- raw request");
+            // println!("{}", s);
+            let bytes_to_add = std::cmp::min(bytes_left, s.len());
+            body.push_str(&s[..bytes_to_add]);
+            bytes_left -= bytes_to_add;
+            if bytes_left == 0 {
+                Ok(IncrementalRequest::FullRequest(RequestNoRemote { header: RequestHeader { request_line, header_lines }, body }))
+            } else {
+                Ok(IncrementalRequest::Body(request_line, header_lines, body, bytes_left, s[bytes_to_add..].to_owned().into_boxed_str().into_boxed_bytes()))
+            }
+        },
+        IncrementalRequest::FullRequest(_) => Err(Error::new("Tried to parse but incremental request was already full".to_string())),
+    }
 }
 
 fn parse_header_line(line: &str) -> Result<(RequestHeaderField, String), Error> {
@@ -299,10 +302,30 @@ impl ToString for StatusCode {
 }
 
 #[derive(Debug)]
+pub enum IncrementalRequest {
+    None(Box<[u8]>),
+    RequestLine(RequestLine, Box<[u8]>),
+    HeaderLines(RequestLine, HashMap<RequestHeaderField, String>, Box<[u8]>),
+    Body(RequestLine, HashMap<RequestHeaderField, String>, String, usize, Box<[u8]>),
+    FullRequest(RequestNoRemote),
+}
+
+#[derive(Debug)]
+pub struct RequestNoRemote {
+    pub header: RequestHeader,
+    pub body: String,
+}
+
+#[derive(Debug)]
 pub struct Request {
     pub header: RequestHeader,
     pub remote: Remote,
     pub body: String,
+}
+impl Request {
+    pub fn from_no_remote(request: RequestNoRemote, stream: &TcpStream) -> Self {
+        Request { header: request.header, remote: Remote { addr: stream.peer_addr().unwrap() }, body: request.body }
+    }
 }
 
 #[derive(Debug)]
@@ -313,13 +336,14 @@ pub struct RequestHeader {
 
 #[derive(Debug,PartialEq,Eq,Hash)]
 pub enum RequestHeaderField {
-    Host, IfModifiedSince, UserAgent, NotSupported
+    ContentLength, Host, IfModifiedSince, UserAgent, NotSupported
 }
 impl FromStr for RequestHeaderField {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
+            "Content-Length" => RequestHeaderField::ContentLength,
             "If-Modified-Since" => RequestHeaderField::IfModifiedSince,
             "Host" => RequestHeaderField::Host,
             "User-Agent" => RequestHeaderField::UserAgent,

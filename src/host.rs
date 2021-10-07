@@ -33,7 +33,7 @@ impl Host {
         }
     }
 
-    pub fn handle(&self, request: Request) -> Response {
+    pub fn handle(&self, request: &Request) -> Response {
         let mut response = self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message));
         response.header.header_lines.insert(ResponseHeaderField::Server, "Rust/0.1".to_string());
         response.header.header_lines.insert(ResponseHeaderField::Date, now_1123());
@@ -42,7 +42,7 @@ impl Host {
 }
 
 impl Host {
-    fn handle_result(&self, request: Request) -> Result<Response, error::HttpError> {
+    fn handle_result(&self, request: &Request) -> Result<Response, error::HttpError> {
         let host_path = request.header.header_lines.get(&RequestHeaderField::Host)
             .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;
         let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
@@ -62,7 +62,7 @@ impl Host {
         }
     }
 
-    fn handle_get(&self, request_target: RequestTarget, request: Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
+    fn handle_get(&self, request_target: RequestTarget, request: &Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
         let (path, metadata) = content_negotiation(request_target, &request.header.header_lines)?;
 
         if metadata.is_dir() {
@@ -95,7 +95,7 @@ impl Host {
         self.files.get_content(path)
     }
 
-    fn handle_post(&self, request_target: RequestTarget, request: Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
+    fn handle_post(&self, request_target: RequestTarget, request: &Request, virtual_host: &VirtualHost) -> Result<Response, error::HttpError> {
         // assert executable
         // assert not directory
         return self.cgi.handle(request_target.path, request, virtual_host);

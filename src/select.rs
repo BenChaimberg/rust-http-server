@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::os::unix::prelude::AsRawFd;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -44,9 +45,10 @@ impl EventLoop {
 
         for event in self.events.iter() {
             let token = event.token();
-            let source = self.event_sources.get_mut(&token).ok_or(Error::new(format!("Could not find handler for token: {}", token.0)))?;
+            let source = self.event_sources.remove(&token).ok_or(Error::new(format!("Could not find handler for token: {}", token.0)))?;
             match source.handle_event(event, token) {
-                Ok(mut responses) => {
+                Ok((new_source, mut responses)) => {
+                    self.event_sources.insert(token, new_source);
                     for response in responses.drain(..) {
                         match response {
                             HandleEventResponse::EmptyCommand(command) => self.submit(Box::new(move |_| Ok(Some(command))))?,
@@ -181,10 +183,10 @@ pub enum EventSource {
 }
 
 impl EventSource {
-    fn handle_event(&mut self, event: &Event, token: Token) -> Result<Vec<HandleEventResponse>, Error> {
+    fn handle_event(self, event: &Event, token: Token) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
         match self {
             Self::TcpListener(listener, token_counter, server_config) => handle_listener_event(event, listener, token_counter, server_config),
-            Self::TcpStream(stream, connection_state, request_handler, _) => handle_stream_event(event, token, stream, connection_state, request_handler),
+            Self::TcpStream(stream, connection_state, request_handler, accept_time) => handle_stream_event(event, token, stream, connection_state, request_handler, accept_time),
             Self::Stdin(stdin, listener_token) => handle_stdin_event(event, stdin, listener_token),
         }
     }
@@ -211,76 +213,130 @@ impl EventSource {
     }
 }
 
-fn handle_stream_event(event: &Event, token: Token, stream: &mut TcpStream, connection_state: &mut ConnectionState, request_handler: &host::Host) -> Result<Vec<HandleEventResponse>, Error> {
+fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, connection_state: ConnectionState, request_handler: host::Host, accept_time: Instant) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
     match connection_state {
-        ConnectionState::Read => {
+        ConnectionState::Read(mut incremental_request) => {
             if event.is_readable() {
-                let request = http::parse_request(stream)?;
-                let response = request_handler.handle(request);
-                *connection_state = ConnectionState::Write(response);
-                Ok(vec!(HandleEventResponse::EmptyCommand(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))
+                let mut buf = [0; 32];
+                let mut buf_str = String::new();
+                loop {
+                    let bytes_read = match stream.read(&mut buf) {
+                        Ok(bytes_read) => {
+                            println!("-- read {} bytes", bytes_read);
+                            if bytes_read > 0 {
+                                buf_str.push_str(std::str::from_utf8(&buf[..bytes_read])?);
+                                bytes_read
+                            } else {
+                                break;
+                            }
+                        },
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            println!("-- read would block");
+                            return Ok((EventSource::TcpStream(stream, ConnectionState::Read(incremental_request), request_handler, accept_time), vec!()));
+                        },
+                        Err(e) => return Err(e.into()),
+                    };
+                    println!("-- current buffer: {}", buf_str);
+
+                    incremental_request = match http::try_parse_request(&buf[..bytes_read], incremental_request) {
+                        Ok(incremental_request) => incremental_request,
+                        Err(_) => return Ok((
+                            EventSource::TcpStream(stream, ConnectionState::Read(http::IncrementalRequest::None(Box::new([]))), request_handler, accept_time),
+                            vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token))))
+                        ),
+                    };
+                    println!("-- request after try_parse: {:#?}", incremental_request);
+
+                    if matches!(incremental_request, http::IncrementalRequest::FullRequest(_)) {
+                        break;
+                    }
+                }
+
+                if let http::IncrementalRequest::FullRequest(request) = incremental_request {
+                    let response = request_handler.handle(&http::Request::from_no_remote(request, &stream));
+                    Ok((
+                        EventSource::TcpStream(stream, ConnectionState::Write(response), request_handler, accept_time),
+                        vec!(HandleEventResponse::EmptyCommand(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))
+                    )
+                } else {
+                    Ok((EventSource::TcpStream(stream, ConnectionState::Read(incremental_request), request_handler, accept_time), vec!()))
+                }
             } else {
-                Ok(vec!())
+                Ok((EventSource::TcpStream(stream, ConnectionState::Read(incremental_request), request_handler, accept_time), vec!()))
             }
         },
         ConnectionState::Write(response) => {
             if event.is_writable() {
-                http::write_response(stream, response.clone())?;
-                Ok(vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token))))
+                http::write_response(&mut stream, response.clone())?;
+                Ok((
+                    EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time),
+                    vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token)))
+                ))
             } else {
-                Ok(vec!())
+                Ok((EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time), vec!()))
             }
         },
+        ConnectionState::Close => Ok((EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time), vec!())),
     }
 }
 
 // TODO: see if we can add Handle for async request handling
 #[derive(Debug)]
 pub enum ConnectionState {
-    Read, Write(http::Response)
+    Read(http::IncrementalRequest), Write(http::Response), Close
 }
 
-fn handle_listener_event(_: &Event, listener: &mut TcpListener, token_counter: &mut usize, server_config: &config::ServerConfig) -> Result<Vec<HandleEventResponse>, Error> {
+fn handle_listener_event(_: &Event, listener: TcpListener, mut token_counter: usize, server_config: config::ServerConfig) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
     match listener.accept() {
         Ok((stream, _)) => {
-            *token_counter += 1;
-            let token = Token(*token_counter);
-            let stream_source = EventSource::TcpStream(stream, ConnectionState::Read, host::Host::new(server_config.clone()), Instant::now());
+            token_counter += 1;
+            let token = Token(token_counter);
+            let stream_source = EventSource::TcpStream(
+                stream,
+                ConnectionState::Read(http::IncrementalRequest::None(Box::new([]))),
+                host::Host::new(server_config.clone()),
+                Instant::now()
+            );
             /*
              * The order of these two commands does matter; the stream source must exist in the event sources map before
              * `check_stream_timeout` is called. Otherwise, the function will assume that the stream source has already
              * been removed from the map due to closure and will stop re-submitting itself.
              */
-            Ok(vec!(
-                HandleEventResponse::EmptyCommand(CommandResponse::NewSource(token, stream_source, Interest::READABLE)),
-                HandleEventResponse::Command(Box::new(move |event_sources| check_stream_timeout(token, event_sources)))
+            Ok((
+                EventSource::TcpListener(listener, token_counter, server_config),
+                vec!(
+                    HandleEventResponse::EmptyCommand(CommandResponse::NewSource(token, stream_source, Interest::READABLE)),
+                    HandleEventResponse::Command(Box::new(move |event_sources| check_stream_timeout(token, event_sources)))
+                )
             ))
         },
         Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
-            Ok(vec!())
+            Ok((EventSource::TcpListener(listener, token_counter, server_config), vec!()))
         } else {
             Err(e.into())
         },
     }
 }
 
+const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
 fn check_stream_timeout(token: Token, event_sources: &HashMap<Token, EventSource>) -> Result<Option<CommandResponse>, Error> {
     // println!("-- check_timeout");
-    let stream_timeout = Duration::from_secs(3);
     let resubmit = Ok(Some(CommandResponse::SubmitCommand(Box::new(move |event_sources| check_stream_timeout(token, event_sources)))));
     if let Some(source) = event_sources.get(&token) {
         if let EventSource::TcpStream(_, connection_state, _, accept_time) = source {
-            if matches!(connection_state, ConnectionState::Read) {
-                if let Some(duration) = Instant::now().checked_duration_since(*accept_time) {
-                    if duration >= stream_timeout {
-                        // println!("-- over timeout, requesting to close source");
-                        return Ok(Some(CommandResponse::CloseSource(token)));
+            if let ConnectionState::Read(incremental_request) = connection_state {
+                if !matches!(incremental_request, http::IncrementalRequest::FullRequest(_)) {
+                    if let Some(duration) = Instant::now().checked_duration_since(*accept_time) {
+                        if duration >= STREAM_TIMEOUT {
+                            // println!("-- over timeout, requesting to close source");
+                            return Ok(Some(CommandResponse::CloseSource(token)));
+                        } else {
+                            // println!("-- under timeout, resubmitting command");
+                            return resubmit;
+                        }
                     } else {
-                        // println!("-- under timeout, resubmitting command");
                         return resubmit;
                     }
-                } else {
-                    return resubmit;
                 }
             }
         } else {
@@ -290,17 +346,17 @@ fn check_stream_timeout(token: Token, event_sources: &HashMap<Token, EventSource
     Ok(None)
 }
 
-fn handle_stdin_event(event: &Event, stdin: &mut Stdin, listener_token: &mut Token) -> Result<Vec<HandleEventResponse>, Error> {
+fn handle_stdin_event(event: &Event, stdin: Stdin, listener_token: Token) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
     if event.is_readable() {
         let mut input = String::new();
         stdin.raw.read_line(&mut input)?;
         input = input.trim().to_string();
         if input == "shutdown" {
             println!("Closing the listener...");
-            return Ok(vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(*listener_token))));
+            return Ok((EventSource::Stdin(stdin, listener_token), vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(listener_token)))));
         } else {
             println!("Command not recognized. Type 'shutdown' to close the listener.");
         }
     }
-    Ok(vec!())
+    Ok((EventSource::Stdin(stdin, listener_token), vec!()))
 }
