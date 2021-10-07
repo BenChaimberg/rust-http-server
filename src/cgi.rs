@@ -19,9 +19,9 @@ impl Cgi {
     pub fn handle(&self, path: path::PathBuf, request: &Request, virtual_host: &VirtualHost) -> Result<Response, HttpError> {
         let remote_addr = request.remote.addr.to_string();
         let request_method = request.header.request_line.method.to_string();
-        let internal_error = || -> HttpError { HttpError { status: StatusCode::InternalServerError, message: None } };
-        let server_port = self.server_config.directives.get(&Directive::ListenPort).ok_or_else(internal_error)?.to_string();
-        let server_name = virtual_host.directives.get(&Directive::ServerName).ok_or_else(internal_error)?;
+        let internal_error = |message| -> HttpError { HttpError { status: StatusCode::InternalServerError, message: Some(message) } };
+        let server_port = self.server_config.directives.get(&Directive::ListenPort).ok_or_else(|| internal_error("Could not get ListenPort from server config".to_string()))?.to_string();
+        let server_name = virtual_host.directives.get(&Directive::ServerName).ok_or_else(|| internal_error("Could not get ServerName from virtual host".to_string()))?;
         let envs: HashMap<&str, &str> = [
             ("QUERY_STRING", request.header.request_line.query_string.as_str()),
             ("REMOTE_ADDR", &remote_addr),

@@ -84,6 +84,6 @@ impl std::fmt::Display for HttpError {
 }
 impl From<io::Error> for HttpError {
     fn from(_: io::Error) -> Self {
-        HttpError { status: StatusCode::InternalServerError, message: None }
+        HttpError { status: StatusCode::InternalServerError, message: Some("io::Error".to_string()) }
     }
 }

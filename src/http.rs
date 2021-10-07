@@ -182,13 +182,11 @@ fn parse_request_line(line: &str) -> Result<RequestLine, Error> {
 }
 
 pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Response where T: std::fmt::Display {
-    match status_code {
-        StatusCode::InternalServerError => {
-            let message = message.map(|m| format!("{}", m)).unwrap_or("<unknown>".to_string());
-            println!("Internal server error: {}", message);
-        },
-        _ => {},
+    if matches!(status_code, StatusCode::InternalServerError) {
+        let message = message.map(|m| format!("{}", m)).unwrap_or("<unknown>".to_string());
+        println!("Internal server error: {}", message);
     }
+
     Response {
         header: ResponseHeader {
             status_line: StatusLine {

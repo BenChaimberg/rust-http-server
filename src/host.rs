@@ -53,7 +53,7 @@ impl Host {
 
         let document_root = &virtual_host.directives.get(&Directive::DocumentRoot)
             .and_then(|document_root| path::Path::new(document_root).canonicalize().ok())
-            .ok_or(error::HttpError { status: StatusCode::InternalServerError, message: None })?;
+            .ok_or(error::HttpError { status: StatusCode::InternalServerError, message: Some("Could not determine document root for virtual host".to_string()) })?;
         let request_target = parse_path(document_root, &request.header.request_line.request_path)?;
 
         match request.header.request_line.method {
