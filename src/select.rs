@@ -222,7 +222,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                 loop {
                     let bytes_read = match stream.read(&mut buf) {
                         Ok(bytes_read) => {
-                            println!("-- read {} bytes", bytes_read);
+                            // println!("-- read {} bytes", bytes_read);
                             if bytes_read > 0 {
                                 buf_str.push_str(std::str::from_utf8(&buf[..bytes_read])?);
                                 bytes_read
@@ -231,12 +231,12 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                             }
                         },
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            println!("-- read would block");
+                            // println!("-- read would block");
                             return Ok((EventSource::TcpStream(stream, ConnectionState::Read(incremental_request), request_handler, accept_time), vec!()));
                         },
                         Err(e) => return Err(e.into()),
                     };
-                    println!("-- current buffer: {}", buf_str);
+                    // println!("-- current buffer: {}", buf_str);
 
                     incremental_request = match http::try_parse_request(&buf[..bytes_read], incremental_request) {
                         Ok(incremental_request) => incremental_request,
@@ -245,7 +245,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                             vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token))))
                         ),
                     };
-                    println!("-- request after try_parse: {:#?}", incremental_request);
+                    // println!("-- request after try_parse: {:#?}", incremental_request);
 
                     if matches!(incremental_request, http::IncrementalRequest::FullRequest(_)) {
                         break;
