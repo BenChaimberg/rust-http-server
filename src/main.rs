@@ -31,12 +31,12 @@ fn main() -> Result<(), Error> {
     println!("Listening on port {}...", port);
     let listener = mio::net::TcpListener::bind(format!("127.0.0.1:{}", port).parse()?)?;
     let listener_source = select::EventSource::TcpListener(listener, token_counter, server_config);
-    send_cmd.send(Box::new(move || { Ok(Some(select::CommandResponse::NewSource(listener_token, listener_source, mio::Interest::READABLE))) }))?;
+    send_cmd.send(Box::new(move |_| { Ok(Some(select::CommandResponse::NewSource(listener_token, listener_source, mio::Interest::READABLE))) }))?;
 
     println!("Type 'shutdown' to close the listener.");
     let stdin = std::io::stdin();
     let stdin_source = select::EventSource::Stdin(select::Stdin::new(stdin), listener_token);
-    send_cmd.send(Box::new(move || { Ok(Some(select::CommandResponse::NewSource(stdin_token, stdin_source, mio::Interest::READABLE))) }))?;
+    send_cmd.send(Box::new(move |_| { Ok(Some(select::CommandResponse::NewSource(stdin_token, stdin_source, mio::Interest::READABLE))) }))?;
 
     event_loop_thread.join().map_err(|_| Error::new("Event loop thread panicked".to_string()))??;
     Ok(())
