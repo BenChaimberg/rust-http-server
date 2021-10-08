@@ -77,6 +77,8 @@ impl Host {
             let since = parse_date_1123(since).map_err(|e| error::HttpError { status: StatusCode::BadRequest, message: Some(e.message) })?;
             let mod_since = files::Files::modified_since(&path, time::Duration::from_secs(since.timestamp().try_into().unwrap())).unwrap_or(true);
             if !mod_since {
+                let mut header_lines = HashMap::new();
+                header_lines.insert(ResponseHeaderField::ContentLength, "0".to_string());
                 return Ok(
                     Response {
                         header: ResponseHeader {
@@ -84,7 +86,7 @@ impl Host {
                                 status_code: StatusCode::NotModified,
                                 http_version: String::from(HTTP_VERSION),
                             },
-                            header_lines: HashMap::new(),
+                            header_lines,
                         },
                         body: String::new(),
                     }
@@ -103,6 +105,8 @@ impl Host {
 }
 
 fn heartbeat() -> Result<Response, error::HttpError> {
+    let mut header_lines = HashMap::new();
+    header_lines.insert(ResponseHeaderField::ContentLength, "0".to_string());
     Ok(
         Response {
             header: ResponseHeader {
@@ -110,7 +114,7 @@ fn heartbeat() -> Result<Response, error::HttpError> {
                     status_code: StatusCode::Ok,
                     http_version: String::from(HTTP_VERSION),
                 },
-                header_lines: HashMap::new(),
+                header_lines,
             },
             body: String::new(),
         }

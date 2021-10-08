@@ -186,13 +186,15 @@ pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Respons
         println!("Internal server error: {}", message);
     }
 
+    let mut header_lines = HashMap::new();
+    header_lines.insert(ResponseHeaderField::ContentLength, "0".to_string());
     Response {
         header: ResponseHeader {
             status_line: StatusLine {
                 status_code,
                 http_version: String::from(HTTP_VERSION),
             },
-            header_lines: HashMap::new(),
+            header_lines,
         },
         body: String::new(),
     }
@@ -215,8 +217,10 @@ impl ToString for Response {
         let mut s = String::new();
         s.push_str(&self.header.to_string());
         s.push_str(CRLF);
-        s.push_str(&self.body);
-        s.push_str(CRLF);
+        if !self.body.is_empty() {
+            s.push_str(&self.body);
+            s.push_str(CRLF);
+        }
         s
     }
 }
