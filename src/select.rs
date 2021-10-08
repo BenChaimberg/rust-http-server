@@ -41,6 +41,10 @@ impl EventLoop {
     }
 
     fn next(&mut self) -> Result<(), Error> {
+        // println!("-- event loop next");
+        // println!("-- event sources");
+        // println!("{:?}", self.event_sources.keys());
+        // println!("-- polling");
         self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))?;
 
         for event in self.events.iter() {
@@ -217,6 +221,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
     match connection_state {
         ConnectionState::Read(mut incremental_request) => {
             if event.is_readable() {
+                // println!("-- reading request {}", token.0);
                 let mut buf = [0; 32];
                 let mut buf_str = String::new();
                 loop {
@@ -245,9 +250,9 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                             vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token))))
                         ),
                     };
-                    // println!("-- request after try_parse: {:#?}", incremental_request);
 
                     if matches!(incremental_request, http::IncrementalRequest::FullRequest(_)) {
+                        // println!("-- full request: {:#?}", incremental_request);
                         break;
                     }
                 }
@@ -267,14 +272,17 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
         },
         ConnectionState::Write(mut response) => {
             if event.is_writable() {
+                // println!("-- writing response {}", token.0);
                 loop {
                     response = match response {
                         http::IncrementalResponse::Struct(response_struct) => http::IncrementalResponse::Bytes(http::write_response(response_struct)?),
                         http::IncrementalResponse::Bytes(bytes) => {
                             match stream.write(&bytes) {
                                 Ok(bytes_written) => if bytes_written > 0 {
+                                    // println!("-- bytes written: {}", bytes_written);
                                     http::IncrementalResponse::Bytes(Box::from(&bytes[bytes_written..]))
                                 } else {
+                                    // println!("-- done writing");
                                     http::IncrementalResponse::Done
                                 },
                                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -287,6 +295,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                             }
                         }
                         http::IncrementalResponse::Done => {
+                            // println!("-- requesting close");
                             return Ok((
                                 EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time),
                                 vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token)))
@@ -309,35 +318,37 @@ pub enum ConnectionState {
 }
 
 fn handle_listener_event(_: &Event, listener: TcpListener, mut token_counter: usize, server_config: config::ServerConfig) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
-    match listener.accept() {
-        Ok((stream, _)) => {
-            token_counter += 1;
-            let token = Token(token_counter);
-            let stream_source = EventSource::TcpStream(
-                stream,
-                ConnectionState::Read(http::IncrementalRequest::None(Box::new([]))),
-                host::Host::new(server_config.clone()),
-                Instant::now()
-            );
-            /*
-             * The order of these two commands does matter; the stream source must exist in the event sources map before
-             * `check_stream_timeout` is called. Otherwise, the function will assume that the stream source has already
-             * been removed from the map due to closure and will stop re-submitting itself.
-             */
-            Ok((
-                EventSource::TcpListener(listener, token_counter, server_config),
-                vec!(
-                    HandleEventResponse::EmptyCommand(CommandResponse::NewSource(token, stream_source, Interest::READABLE)),
-                    HandleEventResponse::Command(Box::new(move |event_sources| check_stream_timeout(token, event_sources)))
-                )
-            ))
-        },
-        Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
-            Ok((EventSource::TcpListener(listener, token_counter, server_config), vec!()))
-        } else {
-            Err(e.into())
-        },
+    let mut responses = Vec::new();
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                token_counter += 1;
+                let token = Token(token_counter);
+                // println!("-- accepting connection {}", token.0);
+                let stream_source = EventSource::TcpStream(
+                    stream,
+                    ConnectionState::Read(http::IncrementalRequest::None(Box::new([]))),
+                    host::Host::new(server_config.clone()),
+                    Instant::now()
+                );
+                /*
+                 * The order of these two commands does matter; the stream source must exist in the event sources map before
+                 * `check_stream_timeout` is called. Otherwise, the function will assume that the stream source has already
+                 * been removed from the map due to closure and will stop re-submitting itself.
+                 */
+                // TODO: change return type of Command to be Vec<CommandResponse> so this can be NewSource; SubmitCommand, which will guarantee ordering regardless of how commands are popped
+                responses.push(HandleEventResponse::EmptyCommand(CommandResponse::NewSource(token, stream_source, Interest::READABLE)));
+                responses.push(HandleEventResponse::Command(Box::new(move |event_sources| check_stream_timeout(token, event_sources))));
+            },
+            Err(e) => if e.kind() == std::io::ErrorKind::WouldBlock {
+                // println!("-- listener spurious wakeup");
+                break;
+            } else {
+                return Err(e.into())
+            },
+        }
     }
+    Ok((EventSource::TcpListener(listener, token_counter, server_config), responses))
 }
 
 const STREAM_TIMEOUT: Duration = Duration::from_secs(60);
