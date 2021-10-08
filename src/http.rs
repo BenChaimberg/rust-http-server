@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::str;
 use std::str::FromStr;
@@ -10,7 +9,7 @@ use crate::error::Error;
 pub const HTTP_VERSION: &str = "HTTP/1.1";
 const CRLF: &str = "\r\n";
 
-pub fn write_response(stream: &mut TcpStream, response: Response) -> Result<(), Error> {
+pub fn write_response(response: Response) -> Result<Box<[u8]>, Error> {
     let chunk_len: usize = 1024;
     if response.header.header_lines.get(&ResponseHeaderField::ContentLength)
         .and_then(|content_length| u32::from_str(content_length).ok())
@@ -19,41 +18,41 @@ pub fn write_response(stream: &mut TcpStream, response: Response) -> Result<(), 
     {
         // arbitrarily choose a maximum response body length, after which responses will be encoded using chunked transfer coding
         // this is not necessarily the intended use case for chunked transfer coding, but will serve as a demo
-        write_chunked(response, stream, chunk_len)?;
+        write_chunked(response, chunk_len)
     } else {
-        stream.write_all(response.to_string().as_bytes())?;
+        Ok(response.to_string().into_boxed_str().into_boxed_bytes())
     }
-    Ok(())
 }
 
-fn write_chunked(mut response: Response, stream: &mut TcpStream, chunk_len: usize) -> Result<(), Error> {
+fn write_chunked(mut response: Response, chunk_len: usize) -> Result<Box<[u8]>, Error> {
     response.header.header_lines.remove(&ResponseHeaderField::ContentLength);
     response.header.header_lines.insert(ResponseHeaderField::TransferEncoding, "chunked".to_string());
-    stream.write_all(response.header.to_string().as_bytes())?;
-    stream.write_all(CRLF.as_bytes())?;
+    let mut bytes = Vec::from(response.header.to_string().as_bytes());
+    bytes.extend(CRLF.as_bytes());
 
     let mut body_iter = response.body.as_bytes().chunks_exact(chunk_len);
     loop {
         if let Some(chunk) = body_iter.next() {
-            write_chunk(chunk, chunk_len, stream)?;
+            bytes = write_chunk(chunk, chunk_len, bytes);
         } else {
             break;
         }
     }
     let remainder = body_iter.remainder();
     if remainder.len() > 0 {
-        write_chunk(remainder, remainder.len(), stream)?;
+        bytes = write_chunk(remainder, remainder.len(), bytes);
     }
-    write_chunk(&[], 0, stream)?;
-    Ok(())
+    bytes = write_chunk(&[], 0, bytes);
+
+    Ok(bytes.into_boxed_slice())
 }
 
-fn write_chunk(chunk: &[u8], chunk_len: usize, stream: &mut TcpStream) -> Result<(), Error> {
-    stream.write_all(format!("{:x}", chunk_len).as_bytes())?;
-    stream.write_all(CRLF.as_bytes())?;
-    stream.write_all(chunk)?;
-    stream.write_all(CRLF.as_bytes())?;
-    Ok(())
+fn write_chunk(chunk: &[u8], chunk_len: usize, mut bytes: Vec<u8>) -> Vec<u8> {
+    bytes.extend(format!("{:x}", chunk_len).as_bytes());
+    bytes.extend(CRLF.as_bytes());
+    bytes.extend(chunk);
+    bytes.extend(CRLF.as_bytes());
+    bytes
 }
 
 pub fn try_parse_request(latest: &[u8], incremental_request: IncrementalRequest) -> Result<IncrementalRequest, Error> {
@@ -197,6 +196,13 @@ pub fn error_response<T>(status_code: StatusCode, message: Option<T>) -> Respons
         },
         body: String::new(),
     }
+}
+
+#[derive(Debug)]
+pub enum IncrementalResponse {
+    Struct(Response),
+    Bytes(Box<[u8]>),
+    Done
 }
 
 #[derive(Clone, Debug)]

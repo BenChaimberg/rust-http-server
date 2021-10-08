@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::prelude::AsRawFd;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -255,7 +255,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                 if let http::IncrementalRequest::FullRequest(request) = incremental_request {
                     let response = request_handler.handle(&http::Request::from_no_remote(request, &stream));
                     Ok((
-                        EventSource::TcpStream(stream, ConnectionState::Write(response), request_handler, accept_time),
+                        EventSource::TcpStream(stream, ConnectionState::Write(http::IncrementalResponse::Struct(response)), request_handler, accept_time),
                         vec!(HandleEventResponse::EmptyCommand(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))
                     )
                 } else {
@@ -265,15 +265,37 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                 Ok((EventSource::TcpStream(stream, ConnectionState::Read(incremental_request), request_handler, accept_time), vec!()))
             }
         },
-        ConnectionState::Write(response) => {
+        ConnectionState::Write(mut response) => {
             if event.is_writable() {
-                http::write_response(&mut stream, response.clone())?;
-                Ok((
-                    EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time),
-                    vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token)))
-                ))
+                loop {
+                    response = match response {
+                        http::IncrementalResponse::Struct(response_struct) => http::IncrementalResponse::Bytes(http::write_response(response_struct)?),
+                        http::IncrementalResponse::Bytes(bytes) => {
+                            match stream.write(&bytes) {
+                                Ok(bytes_written) => if bytes_written > 0 {
+                                    http::IncrementalResponse::Bytes(Box::from(&bytes[bytes_written..]))
+                                } else {
+                                    http::IncrementalResponse::Done
+                                },
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    return Ok((
+                                        EventSource::TcpStream(stream, ConnectionState::Write(http::IncrementalResponse::Bytes(bytes)), request_handler, accept_time),
+                                        vec!()
+                                    ));
+                                },
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
+                        http::IncrementalResponse::Done => {
+                            return Ok((
+                                EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time),
+                                vec!(HandleEventResponse::EmptyCommand(CommandResponse::CloseSource(token)))
+                            ))
+                        },
+                    }
+                }
             } else {
-                Ok((EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time), vec!()))
+                Ok((EventSource::TcpStream(stream, ConnectionState::Write(response), request_handler, accept_time), vec!()))
             }
         },
         ConnectionState::Close => Ok((EventSource::TcpStream(stream, ConnectionState::Close, request_handler, accept_time), vec!())),
@@ -283,7 +305,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
 // TODO: see if we can add Handle for async request handling
 #[derive(Debug)]
 pub enum ConnectionState {
-    Read(http::IncrementalRequest), Write(http::Response), Close
+    Read(http::IncrementalRequest), Write(http::IncrementalResponse), Close
 }
 
 fn handle_listener_event(_: &Event, listener: TcpListener, mut token_counter: usize, server_config: config::ServerConfig) -> Result<(EventSource, Vec<HandleEventResponse>), Error> {
