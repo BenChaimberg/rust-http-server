@@ -223,13 +223,13 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
             if event.is_readable() {
                 // println!("-- reading request {}", token.0);
                 let mut buf = [0; 32];
-                let mut buf_str = String::new();
+                // let mut buf_str = String::new();
                 loop {
                     let bytes_read = match stream.read(&mut buf) {
                         Ok(bytes_read) => {
                             // println!("-- read {} bytes", bytes_read);
                             if bytes_read > 0 {
-                                buf_str.push_str(std::str::from_utf8(&buf[..bytes_read])?);
+                                // buf_str.push_str(std::str::from_utf8(&buf[..bytes_read])?);
                                 bytes_read
                             } else {
                                 break;
@@ -258,7 +258,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                 }
 
                 if let http::IncrementalRequest::FullRequest(request) = incremental_request {
-                    let response = request_handler.handle(&http::Request::from_no_remote(request, &stream));
+                    let response = request_handler.handle(&http::Request::from_no_remote(request, stream.peer_addr()?));
                     Ok((
                         EventSource::TcpStream(stream, ConnectionState::Write(http::IncrementalResponse::Struct(response)), request_handler, accept_time),
                         vec!(HandleEventResponse::EmptyCommand(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))

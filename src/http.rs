@@ -3,7 +3,6 @@ use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::str;
 use std::str::FromStr;
-use mio::net::TcpStream;
 use crate::error::Error;
 
 pub const HTTP_VERSION: &str = "HTTP/1.1";
@@ -331,8 +330,8 @@ pub struct Request {
     pub body: String,
 }
 impl Request {
-    pub fn from_no_remote(request: RequestNoRemote, stream: &TcpStream) -> Self {
-        Request { header: request.header, remote: Remote { addr: stream.peer_addr().unwrap() }, body: request.body }
+    pub fn from_no_remote(request: RequestNoRemote, addr: SocketAddr) -> Self {
+        Request { header: request.header, remote: Remote { addr }, body: request.body }
     }
 }
 
