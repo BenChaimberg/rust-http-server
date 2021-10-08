@@ -107,6 +107,6 @@ impl Files {
         let metadata = fs::metadata(path)?;
         let modified = metadata.modified()?;
         let duration = modified.duration_since(time::UNIX_EPOCH)?;
-        Ok(duration > start)
+        Ok((duration - start).as_secs() > 0)
     }
 }
