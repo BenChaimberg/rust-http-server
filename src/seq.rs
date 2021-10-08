@@ -4,7 +4,7 @@ use crate::error::Error;
 use crate::host;
 use crate::http;
 
-pub fn process(request_handler: &host::Host, mut stream: std::net::TcpStream) -> Result<(), Error> {
+pub fn process(request_handler: &host::Host, mut stream: std::net::TcpStream, overloaded: bool) -> Result<(), Error> {
     let mut buf = [0; 32];
     let mut buf_str = String::new();
     let mut incremental_request = http::IncrementalRequest::None(Box::new([]));
@@ -33,7 +33,7 @@ pub fn process(request_handler: &host::Host, mut stream: std::net::TcpStream) ->
     // println!("-- worker {}: finished read stream", thread_num);
 
     if let http::IncrementalRequest::FullRequest(request) = incremental_request {
-        let response = request_handler.handle(&http::Request::from_no_remote(request, stream.peer_addr()?));
+        let response = request_handler.handle(&http::Request::from_no_remote(request, stream.peer_addr()?), overloaded);
         stream.write_all(&http::write_response(response)?)?;
         Ok(())
     } else {

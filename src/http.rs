@@ -293,7 +293,7 @@ impl ToString for StatusLine {
 
 #[derive(Clone, Debug)]
 pub enum StatusCode {
-    Ok, NotModified, BadRequest, Forbidden, NotFound, InternalServerError
+    Ok, NotModified, BadRequest, Forbidden, NotFound, InternalServerError, ServiceUnavailable
 }
 impl ToString for StatusCode {
     fn to_string(&self) -> String {
@@ -304,6 +304,7 @@ impl ToString for StatusCode {
             StatusCode::Forbidden => "403 Forbidden",
             StatusCode::NotFound => "404 Not Found",
             StatusCode::InternalServerError => "500 Internal Server Error",
+            StatusCode::ServiceUnavailable => "503 Service Unavailable",
         }.to_string()
     }
 }

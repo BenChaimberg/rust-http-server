@@ -50,7 +50,7 @@ fn single(server_config: config::ServerConfig) -> Result<(), Error> {
     let request_handler = host::Host::new(server_config);
 
     for stream in listener.incoming() {
-        if let Err(e) = seq::process(&request_handler, stream?) {
+        if let Err(e) = seq::process(&request_handler, stream?, false) {
             println!("Error processing request: {}", e);
         }
     }
@@ -86,13 +86,23 @@ fn thread_pool(server_config: config::ServerConfig) -> Result<(), Error> {
     println!("Listening on port {}...", port);
     let listener = std::net::TcpListener::bind(format!("127.0.0.1:{}", port))?;
 
-    let (recv_ready, threads) = pool::spawn_threads(&server_config)?;
+    let (send_ready, recv_ready, threads) = pool::spawn_threads(&server_config)?;
     for stream in listener.incoming() {
         // println!("-- main: accepted new stream");
         let pass_to_worker = || -> Result<(), error::Error> {
             let thread_num = recv_ready.recv()?;
+
+            let mut ready = Vec::new();
+            for thread in recv_ready.try_iter() {
+                ready.push(thread);
+            }
+            let overloaded = ready.len() == 0;
+            for thread in ready.drain(..) {
+                send_ready.send(thread)?;
+            }
+
             let thread = threads.get(thread_num).ok_or_else(|| error::Error::new("Received out of bounds thread number, somehow...".to_string()))?;
-            thread.send_stream.send(stream?)?;
+            thread.send_stream.send((stream?, overloaded))?;
             Ok(())
         };
         if let Err(e) = pass_to_worker() {

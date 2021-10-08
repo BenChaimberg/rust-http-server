@@ -258,7 +258,7 @@ fn handle_stream_event(event: &Event, token: Token, mut stream: TcpStream, conne
                 }
 
                 if let http::IncrementalRequest::FullRequest(request) = incremental_request {
-                    let response = request_handler.handle(&http::Request::from_no_remote(request, stream.peer_addr()?));
+                    let response = request_handler.handle(&http::Request::from_no_remote(request, stream.peer_addr()?), false);
                     Ok((
                         EventSource::TcpStream(stream, ConnectionState::Write(http::IncrementalResponse::Struct(response)), request_handler, accept_time),
                         vec!(HandleEventResponse::EmptyCommand(CommandResponse::ModifyInterests(token, Interest::WRITABLE))))

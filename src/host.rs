@@ -33,8 +33,8 @@ impl Host {
         }
     }
 
-    pub fn handle(&self, request: &Request) -> Response {
-        let mut response = self.handle_result(request).unwrap_or_else(|e| error_response(e.status, e.message));
+    pub fn handle(&self, request: &Request, overloaded: bool) -> Response {
+        let mut response = self.handle_result(request, overloaded).unwrap_or_else(|e| error_response(e.status, e.message));
         response.header.header_lines.insert(ResponseHeaderField::Server, "Rust/0.1".to_string());
         response.header.header_lines.insert(ResponseHeaderField::Date, now_1123());
         response
@@ -42,13 +42,13 @@ impl Host {
 }
 
 impl Host {
-    fn handle_result(&self, request: &Request) -> Result<Response, error::HttpError> {
+    fn handle_result(&self, request: &Request, overloaded: bool) -> Result<Response, error::HttpError> {
         let host_path = request.header.header_lines.get(&RequestHeaderField::Host)
             .ok_or(error::HttpError { status: StatusCode::BadRequest, message: None })?;
         let virtual_host = get_virtual_host(&self.server_config.virtual_hosts, host_path);
 
         if request.header.request_line.method == Method::Get && request.header.request_line.request_path == "/load" {
-            return heartbeat();
+            return heartbeat(overloaded);
         }
 
         let document_root = &virtual_host.directives.get(&Directive::DocumentRoot)
@@ -104,14 +104,15 @@ impl Host {
     }
 }
 
-fn heartbeat() -> Result<Response, error::HttpError> {
+fn heartbeat(overloaded: bool) -> Result<Response, error::HttpError> {
     let mut header_lines = HashMap::new();
     header_lines.insert(ResponseHeaderField::ContentLength, "0".to_string());
+    let status_code = if overloaded { StatusCode::ServiceUnavailable } else { StatusCode::Ok };
     Ok(
         Response {
             header: ResponseHeader {
                 status_line: StatusLine {
-                    status_code: StatusCode::Ok,
+                    status_code,
                     http_version: String::from(HTTP_VERSION),
                 },
                 header_lines,
